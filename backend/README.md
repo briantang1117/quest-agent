@@ -1,6 +1,6 @@
 # Java 业务底座
 
-**会话交接：[API-Java交接.md](api-java/API-Java交接.md)**（IDEA Maven排查、当前已验证状态、后续业务边界；不含密钥）。
+**会话交接：[API-Java交接.md](api-java/docs/API-Java交接.md)**（IDEA Maven排查、当前已验证状态、后续业务边界；不含密钥）。
 
 **日常开发请用 [IDEA独立启动说明](IDEA开发.md)**：IDEA直接打开backend，Java使用自身.env.api.properties/.env.worker.properties与Shell/原生Run/Debug，不依赖根目录Python脚本。数据库迁移默认关闭。下文为构建与技术栈记录。
 

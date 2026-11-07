@@ -2,7 +2,27 @@
 
 ## 打开与工具链
 
-IDEA选择 **Open → backend/**，将pom.xml导入为Maven工程。不需要打开仓库根目录或Python工程。
+**当前用户选择只打开 `backend/api-java/`，无需重开整个backend。** API仍继承`../pom.xml`并依赖兄弟模块`../common`，不是完全独立的Maven工程。也可选择打开backend并导入全部Java模块，但不是本次修复的前提。
+
+### 只打开api-java时（当前方式）
+
+- Maven Home：`../tools/distributions/apache-maven-3.10.0`；User settings：`../.mvn/settings.xml`；独立本地仓库：`../tools/repository`。IDEA设置中使用对应绝对路径，不改公司`~/.m2/settings.xml`。
+- Project SDK、Maven Importing的JDK for importer、Runner JRE均选择JDK27；仅设置Project SDK不会保证导入器已切换。2026-11-07日志曾显示导入器使用Java25，需另行核对。
+- settings中的仓库变量由wrapper传入；Importer/Runner VM options保留`-Dquest.maven.repo=本机backend绝对路径/tools/repository`。当前没有`.mvn/maven.config`，不依赖该选项。
+- API单模块导入不会自动构建common。首次或common源码变更后，在api-java终端执行：
+
+  ```bash
+  ../mvnw -B -ntp -pl api-java -am clean install
+  ```
+
+  wrapper固定选择父POM，`-am`构建依赖并install到同一项目仓库。随后在IDEA执行Reload All Maven Projects。另一种方式是在Maven窗口额外关联`../common/pom.xml`，仍可保持IDEA项目根为api-java。
+- 若出现`com.quest:common:jar:0.1.0 was not found ... cached ... quest-public-central`，先检查同一仓库是否有common JAR/POM和quest-backend父POM。`-U`只重新查询远程，不会生成尚未安装的本项目模块。2026-11-07本机已完成上述install，修复前同参数单模块构建失败、修复后16项测试通过。
+- backend下的`.run/`不会自动出现在此子工程；手工创建Application，main=`com.quest.api.ApiApplication`，classpath选API模块，JRE27，Working directory=`$PROJECT_DIR$/..`（backend），Program arguments=`--spring.profiles.active=deployment`。
+- 不要在api-java复制或覆盖真实properties，已有`../.env.api.properties`由backend工作目录加载。Shell入口可使用`bash ../scripts/start-api.sh`。
+
+**2026-11-07验证：** 全模块`../mvnw -B -ntp clean verify`共33项测试通过；API JAR在backend工作目录、备用端口18081、显式`--spring.flyway.enabled=false`下readiness200/UP、health200/UP、匿名业务401，临时进程已停止。IDEA Reload及原生Run/Debug仍待实际确认，不能用CLI结果代替。
+
+下文路径和`$PROJECT_DIR$`默认按打开backend说明；只打开api-java时以本节的`../`路径及Working directory为准。
 
 - Project SDK与语言级别：JDK27，不启用Preview。
 - 本机JDK：`backend/tools/jdk/Contents/Home`（IDEA打开backend后显示为tools/jdk/Contents/Home）。其他机器安装JDK27并设置QUEST_JAVA_HOME。

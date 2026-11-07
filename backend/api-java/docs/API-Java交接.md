@@ -4,7 +4,7 @@
 
 ## 优先阅读：用户实际打开的是 api-java 子目录
 
-**本文件就在IDEA当前工程根 `backend/api-java/`。实际目录名称是 `api-java`（带连字符），不是 `apijava`。** 以下未注明的工程级路径沿用backend基准；从当前目录访问要加 `../`。
+**本文件已归档到 `backend/api-java/docs/`；IDEA当前工程根仍为 `backend/api-java/`。实际目录名称是 `api-java`（带连字符），不是 `apijava`。** 以下命令和`../`路径均以api-java工程根为工作目录，不以docs目录为基准；未注明的工程级路径沿用backend基准。日常指导见根目录[CLAUDE.md](../CLAUDE.md)，启动配置见[IDEA启动配置.md](IDEA启动配置.md)。
 
 用户确认只打开API子项目，不要求本次把它改造成完全独立仓库。父POM为`../pom.xml`，共享依赖为`../common`；Maven可从相对路径读取父POM，但common需要作为IDEA模块导入或先通过父工程install进入项目独立本地仓库。
 
@@ -30,6 +30,32 @@ IDEA当前项目为api-java时：
 - 配置/文档在父目录：`../IDEA开发.md`、`../.env.api.properties`（秘密文件勿回显）。没有把密钥复制进API目录。
 
 如果IDEA Claude权限仅限api-java而不能读取父目录，应按权限提示请求用户批准访问所需父POM/common/.mvn，不借其他会话绕过限制；不要先把整个秘密文件附进聊天。
+
+## 本轮排查结果（2026-11-07 20:06）
+
+### 已确认根因与修复
+
+- 用户实际错误：`com.quest:common:jar:0.1.0 was not found ... This failure was cached ... quest-public-central`。
+- IDEA 的 `api-java/.idea/misc.xml` 只关联本目录 `pom.xml`，未关联 `../common/pom.xml`；父 POM 的相对路径继承不会自动把兄弟模块加入 reactor。
+- IDEA 已保存 Maven Home=`../tools/distributions/apache-maven-3.10.0`、user settings=`../.mvn/settings.xml`、local repository=`../tools/repository`、`useMavenConfig=false`。CLI effective-settings 同样是该项目仓库及公共 Central；本次不是公司 Nexus 故障。
+- 修复前 `tools/repository/com/quest/common/0.1.0` 只有 `.lastUpdated`，缺少 JAR/POM，父 POM 也未安装。使用项目 Maven、同一 settings/仓库、`-f api-java/pom.xml test` 已精确复现用户缓存报错。
+- 已从 `api-java/` 执行 `../mvnw -B -ntp -pl api-java -am clean install`：父 POM、common、API 全部成功，31 项测试通过，父 POM 和 common JAR/POM 已安装到项目独立仓库。未修改 POM/Maven settings，未删除缓存，不需要 `-U`。
+- 再执行与修复前相同的 API 单模块命令，16 项测试通过、`BUILD SUCCESS`，证明单模块已能从本地仓库解析 common。
+- `../mvnw -B -ntp clean verify` 全模块回归：common 15、API 16、Worker 2，共33项，零失败/错误/跳过，`BUILD SUCCESS`。
+
+### API 冒烟与仍待确认项
+
+- 从 backend 工作目录，以 JDK27、`deployment` profile、`--spring.flyway.enabled=false`、本机备用端口18081启动本轮构建的 API JAR；readiness=200/UP（含数据库）、health=200/UP、匿名 `/api/v1/system/info`=401。Hikari连接及关闭成功，日志无 Flyway 迁移执行记录。
+- 本轮临时 API 已停止，`lsof` 确认18081无 LISTEN，TCP连接被拒绝；未停止用户IDE进程。停止后直接 `bind` 曾报 Address already in use，后改为监听/连接检查，不能把该 bind 结果误报成残留服务。
+- IDEA日志最近一次 Maven importer 连接（19:52:50）使用项目 Maven3.10.0，但 JDK 是Java25；`.idea/misc.xml` 的项目SDK为temurin-27。需在 Settings → Build Tools → Maven → Importing 将 JDK for importer 设为Project JDK27，并核对Runner JRE27。Java25不是本次缺少common的直接原因。
+- 后续用户已在IDEA关联`../common/pom.xml`、设置Importer为项目JDK27，并确认Maven依赖不再标红；当前`.idea/misc.xml`已记录API与common两份POM。IDEA原生Run/Debug启动仍未确认，不要将依赖恢复或JAR冒烟写成原生调试已验收。
+- 完整工程指导保存在根目录`CLAUDE.md`，不再通过docs中的副本加载。`docs/IDEA启动配置.md`保存Maven及原生运行字段、健康检查，本文归档为`docs/API-Java交接.md`。
+- 下一步：保持只打开api-java，Reload All Maven Projects，确认common解析错误消失。若仍显示旧错误，再使用强制更新重新加载，并核对IDE实际仓库；不需要改公司settings或初始化数据库。
+- common后续源码变更时，单模块IDE不会自动重编译兄弟模块；重新运行上述父工程install命令，或在Maven窗口额外关联`../common/pom.xml`。无需强制改为打开整个backend。
+
+验证日志（均在backend/tools）：`idea-common-install.log`、`idea-api-single-module-test.log`、`idea-maven-clean-verify.log`、`idea-maven-api-smoke.log`；生效配置摘要来源`idea-effective-settings.xml`，不要回显其他可能带凭据的settings。
+
+以下章节保留初始交接背景；“尚未获得当前错误”等表述以本轮排查结果为准。
 
 ## 0. 给接手会话的任务
 
@@ -293,10 +319,10 @@ Python已经迁移LangGraph1.2.20，FastAPI内部抽取工作流、90tests通过
 
 ## 10. 交接验收清单
 
-- [ ] 获得并记录IDEA当前具体报错、项目根、Maven/JDK/user/global settings。
-- [ ] 找到CLI与IDE差异的实际证据，修复且不动公司全局设置。
-- [ ] IDEA Reload Maven成功，模块/依赖正确。
-- [ ] 项目wrapper clean verify仍33项全绿，不跳过测试。
-- [ ] IDEA Native API Run/Debug启动，数据库readiness=UP，匿名业务401。
-- [ ] 无自动Flyway迁移、无密码回显、无远程资源未授权修改。
-- [ ] 更新IDEA开发.md、本文和实际未完成项。
+- [ ] 已记录具体报错、项目根及已保存Maven/SDK/user settings/仓库；IDEA实际global settings、最新Importer/Runner JDK仍待完整核对。
+- [x] 找到CLI reactor与IDE单模块导入差异，安装父POM/common后同参数单模块构建成功，未动公司全局设置。
+- [ ] IDEA Reload Maven成功，模块/依赖正确（本轮IDE诊断超时，待实际重载确认）。
+- [x] 项目wrapper clean verify仍33项全绿，不跳过测试。
+- [ ] IDEA Native API Run/Debug启动（本轮仅JAR冒烟确认数据库readiness=UP、匿名业务401，未替代原生调试验收）。
+- [x] 无自动Flyway迁移、无密码回显、无远程资源未授权修改；临时进程已停止。
+- [x] 更新IDEA开发.md、本文和实际未完成项。
