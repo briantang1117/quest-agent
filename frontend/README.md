@@ -12,7 +12,7 @@
 pnpm install --frozen-lockfile
 ```
 
-Node>=22.12，pnpm10.33.0。WebStorm Settings → Node.js选择本机Node，Package manager选pnpm。桌面IDE的PATH不同于终端时配置QUEST_PNPM_BIN；Shell脚本额外检查macOS常用~/Library/pnpm/pnpm。
+Node 22.13+（22.x）或 >=24，pnpm10.33.0。WebStorm Settings → Node.js选择本机Node，Package manager选pnpm。桌面IDE的PATH不同于终端时配置QUEST_PNPM_BIN；Shell脚本额外检查macOS常用~/Library/pnpm/pnpm。
 
 ## 本地配置
 
@@ -38,7 +38,8 @@ WebStorm打开本工程package.json，点scripts旁运行按钮：
 
 - dev:pc → PC
 - dev:mobile → 移动
-- test / typecheck / build → 验证
+- lint / format:check / test / typecheck / build → 验证
+- lint:fix / format → 自动修复与格式化
 
 也可Add Configuration → npm → package.json选本工程文件，Command=run，Script=dev:pc或dev:mobile。
 
@@ -66,12 +67,24 @@ Vite热更新，改.env后重启。当前dev脚本监听0.0.0.0，用于手机�
 ## 测试构建
 
 ```bash
+pnpm lint
+pnpm format:check
 pnpm test
 pnpm typecheck
 pnpm build
+
+# 修改文件后自动修复代码问题与格式
+pnpm lint:fix
+pnpm format
 ```
 
-独立根实测：36tests、3包类型检查、双端Vite构建通过，产物pc-web/dist和mobile-agent/dist。
+ESLint 10 flat config 位于 `eslint.config.mjs`，启用 JavaScript、TypeScript 与 Vue recommended 规则，警告也使检查失败。Prettier 3 位于 `.prettierrc.json`，统一无分号、单引号、两空格、100 列和 LF；`eslint-config-prettier` 关闭与格式化冲突的 lint 规则。依赖、构建产物、锁文件和环境文件不参与格式化。类型问题继续用 `pnpm typecheck` 检查。
+
+外层 `/Users/brian/Desktop/quest-agent/` 是主项目，不是前端依赖根。可在主项目根目录执行同名命令（如 `pnpm lint`、`pnpm format`），根脚本会切换到 `frontend/`，不会扫描或格式化后端及主项目文档。依赖只安装在 `frontend/`，版本锁定在本目录 `pnpm-lock.yaml`。
+
+WebStorm 打开 `frontend/` 时，在 Settings → Languages & Frameworks → JavaScript → Code Quality Tools → ESLint 选择 Automatic ESLint configuration；Prettier 选择本目录 `node_modules/prettier`，可启用 Run on save。若打开整个主项目，ESLint 工作目录使用 `frontend/`，Prettier 包仍指向 `frontend/node_modules/prettier`，文件范围限定 `frontend/`，不要对整个主项目启用格式化。
+
+单元测试当前覆盖 shared；构建产物为 pc-web/dist 和 mobile-agent/dist。
 
 ## 生产配置
 

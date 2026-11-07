@@ -2,11 +2,17 @@
 import { describe, expect, it } from 'vitest'
 import { renderMarkdown } from '../src/markdown'
 
-function dom(source: string) { const div = document.createElement('div'); div.innerHTML = renderMarkdown(source); return div }
+function dom(source: string) {
+  const div = document.createElement('div')
+  div.innerHTML = renderMarkdown(source)
+  return div
+}
 
 describe('safe Markdown', () => {
   it('renders headings, tables and fenced code', () => {
-    const el = dom('# 接入说明\n\n| 功能 | 状态 |\n| --- | --- |\n| 题库 | 未接入 |\n\n```js\nconst a = 1\n```')
+    const el = dom(
+      '# 接入说明\n\n| 功能 | 状态 |\n| --- | --- |\n| 题库 | 未接入 |\n\n```js\nconst a = 1\n```',
+    )
     expect(el.querySelector('h1')?.textContent).toBe('接入说明')
     expect(el.querySelector('td')?.textContent).toBe('题库')
     expect(el.querySelector('pre code')?.textContent).toContain('const a = 1')
@@ -24,13 +30,15 @@ describe('safe Markdown', () => {
     '<iframe srcdoc="<script>alert(1)</script>"></iframe>',
     '$\\href{javascript:alert(1)}{x}$',
     '$\\htmlStyle{background:url(javascript:alert(1))}{x}$',
-  ])('removes executable content from %s', source => {
+  ])('removes executable content from %s', (source) => {
     const el = dom(source)
     expect(el.querySelector('script,iframe,svg,object,embed')).toBeNull()
-    for (const node of el.querySelectorAll('*')) for (const attr of node.attributes) {
-      expect(attr.name).not.toMatch(/^on/i)
-      if (/^(href|src|xlink:href)$/i.test(attr.name)) expect(attr.value).not.toMatch(/^\s*(javascript|data):/i)
-    }
+    for (const node of el.querySelectorAll('*'))
+      for (const attr of node.attributes) {
+        expect(attr.name).not.toMatch(/^on/i)
+        if (/^(href|src|xlink:href)$/i.test(attr.name))
+          expect(attr.value).not.toMatch(/^\s*(javascript|data):/i)
+      }
   })
   it('keeps safe links and images', () => {
     const el = dom('[文档](https://example.com)\n\n![题图](https://example.com/a.png)')

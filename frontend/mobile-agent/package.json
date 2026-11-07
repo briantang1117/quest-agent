@@ -1,6 +1,27 @@
 {
- "name":"@quest/mobile-agent", "version":"0.0.0", "private":true, "type":"module",
- "scripts":{"dev":"vite --host 0.0.0.0","typecheck":"vue-tsc --noEmit -p tsconfig.json","build":"vite build","preview":"vite preview --host 0.0.0.0"},
- "dependencies":{"@quest/shared":"workspace:*","vant":"^4.9.21","vue":"^3.5.24","pinia":"^3.0.4","vue-router":"^4.6.3"},
- "devDependencies":{"@vitejs/plugin-vue":"^6.0.2","vite":"^7.3.1","typescript":"~5.9.3","vue-tsc":"^3.1.4","unplugin-vue-components":"^30.0.0","@types/node":"^22.19.0"}
+  "name": "@quest/mobile-agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "@quest/shared": "workspace:*",
+    "vant": "^4.9.21",
+    "vue": "^3.5.24",
+    "pinia": "^3.0.4",
+    "vue-router": "^4.6.3"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.2",
+    "vite": "^7.3.1",
+    "typescript": "~5.9.3",
+    "vue-tsc": "^3.1.4",
+    "unplugin-vue-components": "^30.0.0",
+    "@types/node": "^22.19.0"
+  }
 }

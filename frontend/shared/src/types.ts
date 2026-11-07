@@ -1,5 +1,15 @@
-export interface ApiResponse<T> { code: number; message: string; data: T; traceId: string }
-export interface Page<T> { list: T[]; total: number; page: number; size: number }
+export interface ApiResponse<T> {
+  code: number
+  message: string
+  data: T
+  traceId: string
+}
+export interface Page<T> {
+  list: T[]
+  total: number
+  page: number
+  size: number
+}
 export type AgentScope = 'admin' | 'student'
 /** Canonical wire DTO, matching the phase-one question JSON schema. */
 export interface Question {
@@ -13,10 +23,21 @@ export interface Question {
   explanation_md: string
   knowledge_points: string[]
   difficulty: 1 | 2 | 3 | 4 | 5
-  source: { exam_type: string | null; exam_name: string | null; year: number | null; region: string | null; paper_id: number | null; question_no: number | null }
+  source: {
+    exam_type: string | null
+    exam_name: string | null
+    year: number | null
+    region: string | null
+    paper_id: number | null
+    question_no: number | null
+  }
   tags: string[]
   status: 'draft' | 'pending_review' | 'published' | 'archived'
-  quality: { ai_confidence: number | null; review_status: 'pending' | 'approved' | 'rejected'; dup_group: string | null }
+  quality: {
+    ai_confidence: number | null
+    review_status: 'pending' | 'approved' | 'rejected'
+    dup_group: string | null
+  }
 }
 export type AgentBlock =
   | { type: 'text'; text: string }

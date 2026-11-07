@@ -7,7 +7,19 @@ export default defineConfig(({ mode }) => {
   return {
     base: '/m/',
     plugins: [vue(), Components({ dts: false, resolvers: [VantResolver()] })],
-    server: { port: 5174, strictPort: true, proxy: env.DEV_API_PROXY_TARGET ? { '/gateway': { target: env.DEV_API_PROXY_TARGET, changeOrigin: true, rewrite: path => path.replace(/^\/gateway/, '') } } : undefined },
+    server: {
+      port: 5174,
+      strictPort: true,
+      proxy: env.DEV_API_PROXY_TARGET
+        ? {
+            '/gateway': {
+              target: env.DEV_API_PROXY_TARGET,
+              changeOrigin: true,
+              rewrite: (path) => path.replace(/^\/gateway/, ''),
+            },
+          }
+        : undefined,
+    },
     preview: { port: 4174, strictPort: true },
   }
 })

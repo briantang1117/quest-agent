@@ -4,7 +4,15 @@ import DOMPurify from 'dompurify'
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 function math(source: string, displayMode: boolean) {
-  return katex.renderToString(source, { displayMode, throwOnError: false, trust: false, strict: 'ignore', output: 'html', maxExpand: 1000, maxSize: 20 })
+  return katex.renderToString(source, {
+    displayMode,
+    throwOnError: false,
+    trust: false,
+    strict: 'ignore',
+    output: 'html',
+    maxExpand: 1000,
+    maxSize: 20,
+  })
 }
 md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
   const start = state.pos
@@ -15,7 +23,10 @@ md.inline.ruler.before('escape', 'math_inline', (state, silent) => {
     end++
   }
   if (end < 0 || end === start + 1 || state.src.slice(start, end).includes('\n')) return false
-  if (!silent) { const token = state.push('math_inline', 'math', 0); token.content = state.src.slice(start + 1, end) }
+  if (!silent) {
+    const token = state.push('math_inline', 'math', 0)
+    token.content = state.src.slice(start + 1, end)
+  }
   state.pos = end + 1
   return true
 })
@@ -31,14 +42,20 @@ md.block.ruler.before('fence', 'math_block', (state, startLine, endLine, silent)
     let closed = false
     while (++next < endLine) {
       const line = state.src.slice(state.bMarks[next], state.eMarks[next])
-      if (line.trimEnd().endsWith('$$')) { content += '\n' + line.trimEnd().slice(0, -2); closed = true; break }
+      if (line.trimEnd().endsWith('$$')) {
+        content += '\n' + line.trimEnd().slice(0, -2)
+        closed = true
+        break
+      }
       content += '\n' + line
     }
     if (!closed) return false
   }
   if (silent) return true
   const token = state.push('math_block', 'math', 0)
-  token.content = content; token.block = true; token.map = [startLine, next + 1]
+  token.content = content
+  token.block = true
+  token.map = [startLine, next + 1]
   state.line = next + 1
   return true
 })
