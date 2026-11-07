@@ -32,6 +32,14 @@ DEV_API_PROXY_TARGET=http://127.0.0.1:8080
 
 本次已生成非敏感代理配置；若目标文件原已存在则保留不覆盖。只看页面不需要启动Java，但健康/系统信息联调需要本地Java8080。前端环境变量公开，不能放S3密钥、JWT签名secret或SSH密码。
 
+### 登录限流与可信代理来源
+
+PC 和移动 Vite 的 `/gateway` 代理均在发送上游请求前，将 `X-Quest-Client-IP` 覆盖为当前 TCP 连接的 `req.socket.remoteAddress` 单个合法 IP；缺失时移除该头，同时移除客户端提供的 `X-Forwarded-For`，不根据浏览器传入的转发头推断来源。
+
+Java 的 `quest.security.login.trusted-proxies` 默认空。只有操作人明确配置可信代理地址（例如本机代理的 `127.0.0.1,::1`）时，后端才应读取专用来源头；可信代理缺少合法来源头应拒绝，不能回退信任任意 XFF。需保持 `server.forward-headers-strategy=none` 并限制后端端口访问，避免客户端绕过受信代理伪造专用头。本次没有修改真实 Java 配置；代理配置需由用户重启 Vite 后生效，不能仅凭页面构建通过声称限流已在当前运行进程启用。
+
+生产 Nginx 同样必须覆盖 `X-Quest-Client-IP` 为 `$remote_addr`，不能原样转发请求方提供的同名头；具体配置由主工程部署流程维护。
+
 ## Run方式一：npm配置
 
 WebStorm打开本工程package.json，点scripts旁运行按钮：
@@ -84,10 +92,18 @@ ESLint 10 flat config 位于 `eslint.config.mjs`，启用 JavaScript、TypeScrip
 
 WebStorm 打开 `frontend/` 时，在 Settings → Languages & Frameworks → JavaScript → Code Quality Tools → ESLint 选择 Automatic ESLint configuration；Prettier 选择本目录 `node_modules/prettier`，可启用 Run on save。若打开整个主项目，ESLint 工作目录使用 `frontend/`，Prettier 包仍指向 `frontend/node_modules/prettier`，文件范围限定 `frontend/`，不要对整个主项目启用格式化。
 
-单元测试当前覆盖 shared；构建产物为 pc-web/dist 和 mobile-agent/dist。
+单元测试覆盖shared、PC用户页面/路由/代理与Arco Less主题编译；构建产物为pc-web/dist和mobile-agent/dist。
+
+## PC主题与登录状态
+
+PC的pc-web/theme.ts通过Less modifyVars设置arcoblue-6=#087d84，Arco按需引入Less，自动生成完整色阶；编译器less在前端workspace根统一安装，避免Vite可选peer依赖类型分裂。改theme/Vite配置或新增依赖后重启PC开发服务。
+
+品牌单字标识使用“序”，名称仍为“知序”。登录页只提示必填，不把新密码规则或平台内部管理说明展示给登录用户。
+
+真实认证在localStorage的quest.auth.session保存token、expiresAt、baseURL，刷新后先通过/auth/me恢复真实身份；不保存密码或缓存角色。不延长后端2h有效期，无Refresh Token；过期/401/登出清缓存。localStorage可被同源脚本读取，生产应评估HttpOnly Cookie升级。开发诊断Token仍仅内存。
 
 ## 生产配置
 
 Nginx同源部署使用VITE_API_BASE_URL=/，不是开发/gateway。Vite变量在构建时嵌入，不能靠改Nginx容器环境变量替换已有静态产物。
 
-当前页面仍是骨架，没有假题库、AI回复或真实登录。Token仅内存保存，刷新清除；shared含Axios错误、SSE和安全Markdown。
+PC登录和Admin用户管理已实现；题库/练习/Agent真实内容与用量仍未接入，不提供假数据；移动端仍为旧Agent骨架。shared包含认证、Axios错误、SSE和安全Markdown。

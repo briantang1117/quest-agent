@@ -45,12 +45,14 @@ public class SecurityConfiguration {
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefaultWithIssuer(issuer), claims));
         return decoder;
     }
-    @Bean SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper mapper) throws Exception {
+    @Bean SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper mapper, UserService users) throws Exception {
         return http.csrf(csrf -> csrf.disable()).formLogin(form -> form.disable()).httpBasic(basic -> basic.disable())
             .requestCache(cache -> cache.disable()).sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth.requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness").permitAll()
                 // No internal service endpoint is exposed until HMAC + replay protection exists.
+                .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                 .requestMatchers("/internal/**", "/api/v1/internal/**").denyAll().anyRequest().authenticated())
+            .addFilterAfter(new SessionSecurityFilter(users, mapper), org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter.class)
             .exceptionHandling(errors -> errors.authenticationEntryPoint((req, res, ex) -> writeError(mapper, req, res, 401, 40100, "Authentication required"))
                 .accessDeniedHandler((req, res, ex) -> writeError(mapper, req, res, 403, 40300, "Access denied")))
             .oauth2ResourceServer(resource -> resource.jwt(jwt -> {}).authenticationEntryPoint((req, res, ex) -> writeError(mapper, req, res, 401, 40100, "Invalid or expired bearer token"))

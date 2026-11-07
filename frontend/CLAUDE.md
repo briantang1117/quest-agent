@@ -72,7 +72,11 @@ Vite 将 `/gateway` 请求转发给 Java，并去掉该前缀。因此 base URL 
 
 ## 当前实现与后续方向
 
-当前是工程底座：双端页面大多是明确标注“未接入”的骨架，不包含真实题库、练习、账号登录、会话或 AI 对话；不要用伪造数据、统计或回复掩盖尚未接入的业务。现有路由没有认证/角色守卫。
+PC已实现真实登录/改密/登出、Admin用户管理和角色路由守卫；其认证store为shared/src/auth.ts。按用户要求将token、expiresAt和baseURL存入localStorage的quest.auth.session，不缓存用户资料/角色/密码；刷新后先调用/auth/me校验成功才进入业务页，过期/401/登出清缓存。不延长后端2h会话，不提供Refresh Token。localStorage有同源脚本可读的XSS风险，生产可另行迁移HttpOnly Cookie方案。手动连接诊断store仍保持仅内存，与真实认证隔离。
+
+PC品牌主题在pc-web/theme.ts仅设置arcoblue-6=#087d84，ArcoResolver importStyle=less，Vite Less自动生成色阶；不要手写少量CSS primary变量或按钮背景覆盖。品牌单字标识为“序”，名称“知序”。登录只校验用户名/密码必填，不展示新密码规则；创建/重置/改密仍使用完整口令规则。
+
+题库、练习、Agent和用量统计仍未接入，移动端仍是Agent骨架；不要用假数据掩盖未实现业务。
 
 后续业务范围以 `../docs/superpowers/plans/2026-11-07-private-question-banks.md` 为准，该文档修订了原统一运营题库假设，但尚未实现：
 

@@ -3,9 +3,6 @@
   color: #263c50;
   background: #f5f8fb;
   font-synthesis: none;
-  --color-primary-6: 8, 125, 132;
-  --color-primary-5: 13, 142, 149;
-  --color-primary-7: 5, 103, 109;
 }
 * {
   box-sizing: border-box;
@@ -540,6 +537,153 @@ p {
   color: #748798;
   max-width: 90ch;
   overflow-wrap: anywhere;
+}
+.auth-page {
+  width: min(100%, 1080px);
+  margin: 0 auto;
+  padding: 72px 40px;
+  min-height: calc(100dvh - 150px);
+  display: grid;
+  grid-template-columns: 1fr 440px;
+  gap: 88px;
+  align-items: center;
+}
+.auth-context h1 {
+  font-family: 'Songti SC', 'SimSun', serif;
+  font-size: clamp(30px, 4vw, 44px);
+  line-height: 1.5;
+  margin-top: 28px;
+}
+.auth-context p {
+  max-width: 38ch;
+  color: #607589;
+}
+.auth-panel {
+  padding: 36px;
+  background: #fff;
+  border: 1px solid #dce5ed;
+  border-top: 4px solid #087d84;
+  border-radius: 8px;
+}
+.auth-panel h2 {
+  font-size: 24px;
+}
+.auth-panel > p {
+  color: #607589;
+  font-size: 13px;
+}
+.auth-panel .arco-form {
+  margin-top: 26px;
+}
+.auth-note {
+  font-size: 12px;
+  color: #607589;
+  margin: 24px 0 0;
+}
+.session-controls {
+  margin-left: auto;
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  font-size: 13px;
+}
+.session-role {
+  display: block;
+  color: #607589;
+  font-size: 11px;
+  margin-top: 5px;
+}
+.user-panel {
+  padding: 24px;
+}
+.user-filters {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.user-filters > div:first-child {
+  flex: 1;
+  min-width: 180px;
+  max-width: 350px;
+}
+.user-filters > div:nth-child(2) {
+  width: 150px;
+}
+.user-filters label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.table-note,
+.privacy-note {
+  font-size: 12px;
+  color: #607589;
+  margin: 22px 0;
+}
+.account-username {
+  margin-top: 5px;
+  color: #607589;
+}
+.account-id {
+  margin-top: 6px;
+  color: #607589;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.user-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #607589;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+.modal-account {
+  color: #17374d;
+  font-weight: 600;
+}
+.arco-alert + .arco-alert,
+.arco-alert + .panel {
+  margin-top: 16px;
+}
+@media (max-width: 950px) {
+  .auth-page {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+    max-width: 580px;
+    padding: 40px 24px;
+  }
+  .auth-context .brand-mark {
+    display: none;
+  }
+  .auth-context h1 {
+    margin-top: 0;
+  }
+  .session-controls {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}
+@media (max-width: 720px) {
+  .auth-panel {
+    padding: 24px;
+  }
+  .user-panel {
+    padding: 16px;
+  }
+  .session-controls {
+    margin-left: 0;
+    padding-bottom: 12px;
+  }
 }
 .site-footer {
   display: flex;

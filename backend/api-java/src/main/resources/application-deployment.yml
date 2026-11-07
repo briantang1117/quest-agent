@@ -6,7 +6,7 @@ spring:
     hikari:
       initialization-fail-timeout: 10000
   flyway:
-    enabled: ${SPRING_FLYWAY_ENABLED:true}
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
     locations: ${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}
     fail-on-missing-locations: true
     validate-migration-naming: true

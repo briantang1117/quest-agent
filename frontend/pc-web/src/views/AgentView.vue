@@ -1,24 +1,24 @@
 <template>
   <section class="page-heading">
     <div>
-      <p class="breadcrumb">管理工作台 / 题库 Agent</p>
-      <h1>题库 Agent</h1>
-      <p class="lead">用于题目导入、校验与审核的管理助手，管理与学员会话将独立隔离。</p>
+      <p class="breadcrumb">学习工作区 / 个人 Agent</p>
+      <h1>个人 Agent</h1>
+      <p class="lead">未来仅处理本人私有题库与学习问题。目前尚未接入对话、检索或工具执行。</p>
     </div>
     <a-tag>业务未实现</a-tag>
   </section>
   <section class="agent-workspace">
     <aside class="session-sidebar">
-      <h2>管理会话</h2>
+      <h2>我的会话</h2>
       <a-button long disabled>新建会话（未接入）</a-button>
       <p>没有加载会话列表。</p>
     </aside>
     <div class="agent-main">
       <div class="empty-state">
-        <span class="agent-emblem" aria-hidden="true">知</span>
+        <span class="agent-emblem" aria-hidden="true">序</span>
         <h2>先连接能力，再开始对话。</h2>
         <p>Agent 业务尚未实现。这里不会生成演示回答，也不会自动调用未上线的会话接口。</p>
-        <RouterLink class="text-link" to="/login">查看服务连接与登录凭据</RouterLink>
+        <RouterLink class="text-link" to="/practice">返回学习工作区</RouterLink>
       </div>
       <div class="composer">
         <label for="agent-draft">消息输入</label

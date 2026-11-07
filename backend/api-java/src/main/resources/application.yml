@@ -4,12 +4,16 @@ spring:
     import: optional:file:./.env.api.properties
   application:
     name: api-java
+  flyway:
+    enabled: false
   profiles:
     default: local
   jackson:
     time-zone: UTC
     # Jackson 3 默认将 java.time 类型输出为 ISO-8601，旧版 SerializationFeature 已移除。
 server:
+  # 禁止容器先信任任意转发头而改写 remoteAddr；登录来源由显式代理白名单单独核验。
+  forward-headers-strategy: none
   port: ${SERVER_PORT:8080}
   error:
     include-message: never

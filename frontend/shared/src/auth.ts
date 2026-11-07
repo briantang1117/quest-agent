@@ -1,0 +1,258 @@
+import { defineStore } from 'pinia'
+import { computed, onScopeDispose, ref } from 'vue'
+import type { AxiosRequestConfig } from 'axios'
+import { ApiError, createApiClient } from './api'
+
+export type UserRole = 'admin' | 'student'
+export type UserStatus = 'active' | 'disabled'
+export interface UserProfile {
+  id: string
+  username: string
+  displayName: string
+  role: UserRole
+  status: UserStatus
+  mustChangePassword: boolean
+  createdAt: string
+  lastLoginAt: string | null
+}
+export interface TokenResult {
+  accessToken: string
+  expiresAt: string
+  user: UserProfile
+}
+export interface LoginInput {
+  username: string
+  password: string
+}
+export interface ChangePasswordInput {
+  currentPassword: string
+  newPassword: string
+}
+
+export function errorMessage(error: unknown): string {
+  return error instanceof ApiError
+    ? `${error.message}${error.traceId ? `（traceId: ${error.traceId}）` : ''}`
+    : '请求失败，请稍后重试'
+}
+
+const SESSION_KEY = 'quest.auth.session'
+function readSession(): { accessToken: string; expiresAt: string; baseURL: string } | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null')
+    return value &&
+      typeof value.accessToken === 'string' &&
+      typeof value.expiresAt === 'string' &&
+      typeof value.baseURL === 'string'
+      ? value
+      : null
+  } catch {
+    return null
+  }
+}
+function removeSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY)
+  } catch {
+    /* 存储被浏览器禁用时仍可使用内存会话。 */
+  }
+}
+// 只持久化凭据/到期时间/服务地址；角色和用户资料必须重新向服务端获取。
+export const useAuthStore = defineStore('auth', () => {
+  const token = ref('')
+  const user = ref<UserProfile | null>(null)
+  const expiresAt = ref('')
+  const baseURL = ref('')
+  const configError = ref('未配置 VITE_API_BASE_URL，不会发送请求')
+  const sessionNotice = ref('')
+  const configured = computed(() => Boolean(baseURL.value) && !configError.value)
+  const authenticated = computed(() =>
+    Boolean(token.value && user.value && user.value.status === 'active'),
+  )
+  let revision = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  let restorePending: Promise<void> | undefined
+  function clearSession(notice = '', discardStored = true) {
+    if (discardStored) removeSession()
+    revision++
+    clearTimeout(timer)
+    token.value = ''
+    user.value = null
+    expiresAt.value = ''
+    sessionNotice.value = notice
+  }
+  function configure(value: string | undefined) {
+    clearSession('', false)
+    const raw = value?.trim() ?? ''
+    const url = raw === '/' ? '/' : raw.replace(/\/+$/, '')
+    baseURL.value = ''
+    configError.value = !url
+      ? '未配置 VITE_API_BASE_URL，不会发送请求'
+      : !/^https?:\/\/[^\s]+$/i.test(url) && !/^\/(?!\/)[^\s?#]*$/.test(url)
+        ? 'VITE_API_BASE_URL 必须是 HTTP(S) 服务根地址或同源代理路径'
+        : ''
+    if (!configError.value) baseURL.value = url
+  }
+  function assertCurrent(version: number) {
+    if (version !== revision) throw new ApiError('会话已变更，请重新操作')
+  }
+  function accept(data: TokenResult, version: number) {
+    assertCurrent(version)
+    const remaining = Date.parse(data.expiresAt) - Date.now()
+    if (
+      !data.accessToken ||
+      !Number.isFinite(remaining) ||
+      remaining <= 0 ||
+      data.user.status !== 'active' ||
+      !['admin', 'student'].includes(data.user.role) ||
+      typeof data.user.id !== 'string'
+    ) {
+      clearSession()
+      throw new ApiError('登录会话无效，请重新登录')
+    }
+    clearTimeout(timer)
+    revision++
+    token.value = data.accessToken
+    user.value = data.user
+    expiresAt.value = data.expiresAt
+    sessionNotice.value = ''
+    try {
+      localStorage.setItem(
+        SESSION_KEY,
+        JSON.stringify({
+          accessToken: data.accessToken,
+          expiresAt: data.expiresAt,
+          baseURL: baseURL.value,
+        }),
+      )
+    } catch {
+      sessionNotice.value = '浏览器未允许保存登录状态，关闭页面后需重新登录'
+    }
+    timer = setTimeout(
+      () => clearSession('登录已过期，请重新登录'),
+      Math.min(remaining, 2147483647),
+    )
+  }
+  async function restoreSession() {
+    if (authenticated.value) return
+    if (restorePending) return restorePending
+    const version = revision
+    const saved = readSession()
+    if (
+      !saved ||
+      !saved.accessToken ||
+      saved.baseURL !== baseURL.value ||
+      !configured.value ||
+      !Number.isFinite(Date.parse(saved.expiresAt)) ||
+      Date.parse(saved.expiresAt) <= Date.now()
+    ) {
+      removeSession()
+      return
+    }
+    restorePending = (async () => {
+      try {
+        const profile = await createApiClient({
+          baseURL: baseURL.value,
+          getToken: () => saved.accessToken,
+        }).get<UserProfile>('/api/v1/auth/me')
+        accept(
+          { accessToken: saved.accessToken, expiresAt: saved.expiresAt, user: profile },
+          version,
+        )
+      } catch (error) {
+        if (version !== revision) return
+        // 非401网络故障暂留凭据供稍后重试，但不接纳缓存身份或放行业务页。
+        const invalid = error instanceof ApiError && (error.status === 401 || error.code === 40100)
+        clearSession(invalid ? '登录已失效，请重新登录' : '暂时无法验证登录状态，请重试', invalid)
+      } finally {
+        restorePending = undefined
+      }
+    })()
+    return restorePending
+  }
+  async function request<T>(config: AxiosRequestConfig): Promise<T> {
+    if (!configured.value) throw new ApiError(configError.value)
+    if (!authenticated.value || Date.parse(expiresAt.value) <= Date.now()) {
+      clearSession('登录已过期，请重新登录')
+      throw new ApiError('登录已失效，请重新登录', 40100)
+    }
+    const version = revision
+    const credential = token.value
+    const client = createApiClient({ baseURL: baseURL.value, getToken: () => credential })
+    try {
+      const data = await client.request<T>(config)
+      assertCurrent(version)
+      return data
+    } catch (error) {
+      if (version === revision && error instanceof ApiError) {
+        if (error.status === 401 || error.code === 40100) clearSession(errorMessage(error))
+        else if (error.code === 40310 && user.value)
+          user.value = { ...user.value, mustChangePassword: true }
+      }
+      throw error
+    }
+  }
+  async function login(input: LoginInput) {
+    clearSession()
+    if (!configured.value) throw new ApiError(configError.value)
+    const version = revision
+    const data = await createApiClient({ baseURL: baseURL.value }).post<TokenResult>(
+      '/api/v1/auth/login',
+      input,
+    )
+    accept(data, version)
+  }
+  async function loadMe() {
+    const version = revision
+    const data = await request<UserProfile>({ method: 'GET', url: '/api/v1/auth/me' })
+    assertCurrent(version)
+    if (
+      data.status !== 'active' ||
+      !['admin', 'student'].includes(data.role) ||
+      typeof data.id !== 'string'
+    ) {
+      clearSession('账号不可用，请重新登录')
+      throw new ApiError('账号不可用', 40100)
+    }
+    user.value = data
+    return data
+  }
+  async function changePassword(input: ChangePasswordInput) {
+    const version = revision
+    const data = await request<TokenResult>({
+      method: 'POST',
+      url: '/api/v1/auth/change-password',
+      data: input,
+    })
+    accept(data, version)
+  }
+  async function logout() {
+    const credential = token.value
+    const url = baseURL.value
+    clearSession()
+    if (credential && url)
+      await createApiClient({ baseURL: url, getToken: () => credential }).post<null>(
+        '/api/v1/auth/logout',
+        {},
+      )
+  }
+  onScopeDispose(() => clearTimeout(timer))
+  return {
+    token,
+    user,
+    expiresAt,
+    baseURL,
+    configError,
+    configured,
+    authenticated,
+    sessionNotice,
+    configure,
+    clearSession,
+    login,
+    restoreSession,
+    loadMe,
+    changePassword,
+    logout,
+    request,
+  }
+})

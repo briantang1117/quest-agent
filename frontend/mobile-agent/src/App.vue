@@ -6,7 +6,7 @@ const connection = useConnectionStore()
   <div class="mobile-app">
     <header class="mobile-header">
       <RouterLink class="brand" to="/sessions"
-        ><span class="brand-mark">知</span
+        ><span class="brand-mark">序</span
         ><span>知序<span class="brand-sub">学习助手</span></span></RouterLink
       ><RouterLink class="connection-link" to="/login"
         ><span class="status-dot" :class="{ ready: connection.health.includes('服务可用') }"></span

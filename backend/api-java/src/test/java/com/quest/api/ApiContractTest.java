@@ -23,13 +23,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties = {"quest.security.jwt.secret=contract-test-secret-at-least-32-bytes-long"})
-@AutoConfigureMockMvc @ActiveProfiles("local")
+@SpringBootTest(properties = {"quest.security.jwt.secret=contract-test-secret-at-least-32-bytes-long", "spring.config.import=",
+    "spring.datasource.url=jdbc:h2:mem:contracts;MODE=PostgreSQL;DB_CLOSE_DELAY=-1", "spring.datasource.username=sa", "spring.datasource.password=",
+    "spring.flyway.enabled=false", "quest.persistence.mode=postgresql", "spring.autoconfigure.exclude=com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration"})
+@AutoConfigureMockMvc @ActiveProfiles("test")
 class ApiContractTest {
     @Autowired MockMvc mvc;
     static final String SECRET = "contract-test-secret-at-least-32-bytes-long";
+    @Autowired org.springframework.jdbc.core.JdbcTemplate db;
+    String sid;
+    @org.junit.jupiter.api.BeforeEach void sessions() {
+        db.execute("CREATE TABLE IF NOT EXISTS app_user(id BIGINT PRIMARY KEY, username VARCHAR(64), display_name VARCHAR(128), account_type VARCHAR(16), status VARCHAR(16), must_change_password BOOLEAN, created_at TIMESTAMP WITH TIME ZONE, last_login_at TIMESTAMP WITH TIME ZONE, password_hash VARCHAR(128))");
+        db.execute("CREATE TABLE IF NOT EXISTS auth_session(id UUID PRIMARY KEY, user_id BIGINT, created_at TIMESTAMP WITH TIME ZONE, expires_at TIMESTAMP WITH TIME ZONE, revoked_at TIMESTAMP WITH TIME ZONE)");
+        db.execute("DELETE FROM auth_session"); db.execute("DELETE FROM app_user");
+        db.update("INSERT INTO app_user VALUES(1,'contract_user','Contract','student','active',FALSE,CURRENT_TIMESTAMP,NULL,'unused')");
+        sid = java.util.UUID.randomUUID().toString();
+        db.update("INSERT INTO auth_session(id,user_id,created_at,expires_at) VALUES(?,1,CURRENT_TIMESTAMP,?)", java.util.UUID.fromString(sid), java.time.OffsetDateTime.now().plusHours(2));
+    }
     String token(String secret, Instant expiry, String issuer, String audience) throws Exception {
-        var claims = new JWTClaimsSet.Builder().subject("contract-user").issuer(issuer).audience(audience)
+        var claims = new JWTClaimsSet.Builder().subject("1").claim("sid", sid).issuer(issuer).audience(audience)
             .issueTime(Date.from(Instant.now())).expirationTime(Date.from(expiry)).build();
         var jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
         jwt.sign(new MACSigner(secret)); return jwt.serialize();
@@ -52,7 +64,7 @@ class ApiContractTest {
         mvc.perform(get("/api/v1/system/info").header("Authorization", bearer()).header("X-Trace-Id", "contract-123"))
             .andExpect(status().isOk()).andExpect(header().string("X-Trace-Id", "contract-123"))
             .andExpect(jsonPath("$.code").value(0)).andExpect(jsonPath("$.data.service").value("api-java"))
-            .andExpect(jsonPath("$.data.persistence").value("disabled"))
+            .andExpect(jsonPath("$.data.persistence").value("postgresql"))
             .andExpect(jsonPath("$.traceId").value("contract-123"));
         assertThat(MDC.get("traceId")).isNull();
     }
@@ -94,9 +106,10 @@ class ApiContractTest {
             .andExpect(status().isInternalServerError()).andExpect(jsonPath("$.code").value(50000))
             .andExpect(jsonPath("$.message").value("Internal server error"));
     }
-    @Test void demoLoginDoesNotExist() throws Exception {
-        mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{\"username\":\"admin\",\"password\":\"admin\"}"))
-            .andExpect(status().isUnauthorized());
+    @Test void loginOnlyAllowsPostAnonymously() throws Exception {
+        mvc.perform(get("/api/v1/auth/login")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/auth/login").contentType(MediaType.APPLICATION_JSON).content("{"))
+            .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(40000));
     }
     @TestConfiguration static class TestEndpoints {
         @Bean TestController testController() { return new TestController(); }

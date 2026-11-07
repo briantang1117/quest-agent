@@ -6,7 +6,7 @@
       <van-tag plain>未接入</van-tag>
     </div>
     <div class="chat-empty">
-      <span class="brand-mark large" aria-hidden="true">知</span>
+      <span class="brand-mark large" aria-hidden="true">序</span>
       <h2>对话能力正在准备中</h2>
       <p>当前无法读取或创建真实会话。此页不生成回答，也不请求尚未实现的 Agent API。</p>
     </div>

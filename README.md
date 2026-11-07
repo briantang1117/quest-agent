@@ -6,7 +6,9 @@
 - [架构说明与模块边界](docs/架构说明.md)
 - [需要你提供的资源与配置](docs/待提供事项.md) ← 数据库、NAS、模型等统一记在这里，无需立即提供
 - [开发进度与验证记录](docs/开发进度.md)
-- [本轮实施计划](docs/superpowers/plans/2026-11-07-foundation.md)
+- **[用户模块第一阶段实施计划](docs/superpowers/plans/2026-11-07-user-module.md)** · [接口与验收约定](docs/用户模块接口与验收.md) ← 开发中，NAS新迁移尚未执行
+- **[用户体系与私有题库后续计划](docs/superpowers/plans/2026-11-07-private-question-banks.md)** ← Admin开户/只看用量、个人多题库、职测与行测；本期不做主观题
+- [工程底座实施计划](docs/superpowers/plans/2026-11-07-foundation.md)
 
 ## 工程结构
 

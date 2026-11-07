@@ -11,11 +11,9 @@
     <div class="stage-copy">
       <span class="subtle-label">你的练习区域</span>
       <h2>题库接入后，<br />在这里开始第一次练习。</h2>
-      <p>
-        我们还没有读取任何题目，也没有生成你的学习记录。开始练习前，需要完成登录、题库与练习接口的对接。
-      </p>
+      <p>你已进入自己的学习工作区。私有题库与练习服务尚未接入，当前不会读取题目或生成学习记录。</p>
       <a-button type="primary" disabled>开始练习（未接入）</a-button
-      ><RouterLink class="text-link" to="/login">检查服务连接</RouterLink>
+      ><RouterLink class="text-link" to="/practice/agent">查看个人 Agent 接入状态</RouterLink>
     </div>
     <div class="study-sheet" aria-hidden="true">
       <div class="sheet-tab">学习空间</div>

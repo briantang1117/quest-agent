@@ -1,4 +1,5 @@
-"""显式执行已批准的 Flyway V1–V3；与日常开发启动分离。"""
+"""显式执行已批准的 Flyway目标；与日常启动分离，不批准未来任意迁移。"""
+import argparse
 import os
 from pathlib import Path
 import socket
@@ -10,11 +11,13 @@ import urllib.request
 from dev import ROOT, service_environment
 
 
-def migration_environment(root: Path) -> dict[str, str]:
+def migration_environment(root: Path, target: str = '3') -> dict[str, str]:
+    if target not in ('3', '4'):
+        raise ValueError('仅允许已定义的目标3或4；新增迁移需独立审查授权')
     config = service_environment(root, 'api')
     config.update({
         'SPRING_FLYWAY_ENABLED': 'true',
-        'SPRING_FLYWAY_TARGET': '3',
+        'SPRING_FLYWAY_TARGET': target,
         'SPRING_FLYWAY_CLEAN_DISABLED': 'true',
         'SERVER_ADDRESS': '127.0.0.1',
         'SERVER_PORT': '18081',
@@ -23,7 +26,10 @@ def migration_environment(root: Path) -> dict[str, str]:
 
 
 def main() -> None:
-    config = migration_environment(ROOT)
+    parser = argparse.ArgumentParser(description='显式迁移工具；先核对目标和授权，不用于日常启动')
+    parser.add_argument('--target', choices=('3', '4'), default='3')
+    arguments = parser.parse_args()
+    config = migration_environment(ROOT, arguments.target)
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', 18081))
     java = Path(os.environ.get('QUEST_JAVA_HOME') or ROOT / 'backend/tools/jdk/Contents/Home')
@@ -33,8 +39,8 @@ def main() -> None:
         raise SystemExit('缺少JDK27或API JAR；先执行 ./backend/mvnw clean verify')
     env = {key: os.environ[key] for key in ('PATH', 'HOME', 'TMPDIR', 'LANG') if key in os.environ}
     env.update(config)
-    log = ROOT / 'backend/tools/dev/migrate.log'
-    print('显式迁移群晖quest库，目标版本3；不执行clean，不输出凭据。', flush=True)
+    log = ROOT / f'backend/tools/dev/migrate-v{arguments.target}.log'
+    print(f'显式迁移群晖quest库，目标版本{arguments.target}；不执行clean，不输出凭据。', flush=True)
     with open(log, 'w', opener=lambda path, flags: os.open(path, flags, 0o600)) as output:
         process = subprocess.Popen([str(java), '-Xms128m', '-Xmx512m', '-jar', str(jar)],
                                    cwd=ROOT, env=env, stdout=output, stderr=subprocess.STDOUT)

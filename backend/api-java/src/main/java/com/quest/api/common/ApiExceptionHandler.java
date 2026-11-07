@@ -19,9 +19,13 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 public class ApiExceptionHandler {
     private static final Logger LOG = LoggerFactory.getLogger(ApiExceptionHandler.class);
     @ExceptionHandler({IllegalArgumentException.class, ConstraintViolationException.class, MethodArgumentNotValidException.class,
-        HandlerMethodValidationException.class, HttpMessageNotReadableException.class})
+        HandlerMethodValidationException.class, org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class, HttpMessageNotReadableException.class})
     ResponseEntity<ApiResponse<Void>> invalid(Exception exception, HttpServletRequest request) {
         return error(400, 40000, "Invalid request", request);
+    }
+    @ExceptionHandler(com.quest.api.auth.UserFailure.class)
+    ResponseEntity<ApiResponse<Void>> userFailure(com.quest.api.auth.UserFailure exception, HttpServletRequest request) {
+        return error(exception.status(), exception.code(), exception.getMessage(), request);
     }
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<ApiResponse<Void>> denied(AccessDeniedException exception, HttpServletRequest request) {
