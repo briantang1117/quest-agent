@@ -7,7 +7,8 @@
     ".": "./src/index.ts",
     "./connection": "./src/connection.ts",
     "./markdown": "./src/markdown.ts",
-    "./markdown.css": "./src/markdown.css"
+    "./markdown.css": "./src/markdown.css",
+    "./fonts.css": "./src/fonts.css"
   },
   "scripts": {
     "test": "vitest run",
@@ -19,7 +20,7 @@
     "katex": "^0.16.27",
     "markdown-it": "^14.1.0",
     "pinia": "^3.0.4",
-    "vue": "^3.5.24"
+    "vue": "^3.5.45"
   },
   "devDependencies": {
     "@types/katex": "^0.16.7",

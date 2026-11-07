@@ -172,7 +172,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
   async function request<T>(config: AxiosRequestConfig): Promise<T> {
     if (!configured.value) throw new ApiError(configError.value)
-    if (!authenticated.value || Date.parse(expiresAt.value) <= Date.now()) {
+    // 已主动退出/没有身份时拒绝请求，但不将后续组件请求误标为会话过期。
+    if (!authenticated.value) throw new ApiError('请先登录', 40100)
+    if (Date.parse(expiresAt.value) <= Date.now()) {
       clearSession('登录已过期，请重新登录')
       throw new ApiError('登录已失效，请重新登录', 40100)
     }

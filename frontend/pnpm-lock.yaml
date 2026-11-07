@@ -51,7 +51,7 @@ importers:
         specifier: ^4.9.21
         version: 4.10.2(vue@3.5.45(typescript@5.9.3))
       vue:
-        specifier: ^3.5.24
+        specifier: ^3.5.45
         version: 3.5.45(typescript@5.9.3)
       vue-router:
         specifier: ^4.6.3
@@ -88,7 +88,7 @@ importers:
         specifier: ^3.0.4
         version: 3.0.4(typescript@5.9.3)(vue@3.5.45(typescript@5.9.3))
       vue:
-        specifier: ^3.5.24
+        specifier: ^3.5.45
         version: 3.5.45(typescript@5.9.3)
       vue-router:
         specifier: ^4.6.3
@@ -143,7 +143,7 @@ importers:
         specifier: ^3.0.4
         version: 3.0.4(typescript@5.9.3)(vue@3.5.45(typescript@5.9.3))
       vue:
-        specifier: ^3.5.24
+        specifier: ^3.5.45
         version: 3.5.45(typescript@5.9.3)
     devDependencies:
       '@types/katex':

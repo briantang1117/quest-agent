@@ -1,5 +1,5 @@
 :root {
-  font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-sans);
   color: #263c50;
   background: #f5f8fb;
   font-synthesis: none;
@@ -88,7 +88,7 @@ p {
   height: 43px;
   border-radius: 13px 4px 13px 4px;
   font-size: 24px;
-  font-family: 'Songti SC', 'SimSun', serif;
+  font-family: var(--font-serif);
 }
 .brand-sub {
   display: block;
@@ -299,7 +299,7 @@ p {
   background: #ecf6f5;
   border-radius: 8px;
   padding: 12px;
-  font-family: 'Songti SC', serif;
+  font-family: var(--font-serif);
 }
 .admin-layout {
   display: grid;
@@ -404,7 +404,7 @@ p {
   border-radius: 8px;
   font-size: 24px;
   padding: 10px 18px;
-  font-family: 'Songti SC', serif;
+  font-family: var(--font-serif);
 }
 .admin-note {
   padding: 30px 6px;
@@ -455,7 +455,7 @@ p {
   background: #e7f2f3;
   color: #087d84;
   font-size: 29px;
-  font-family: 'Songti SC', serif;
+  font-family: var(--font-serif);
 }
 .composer {
   padding: 20px;
@@ -549,7 +549,7 @@ p {
   align-items: center;
 }
 .auth-context h1 {
-  font-family: 'Songti SC', 'SimSun', serif;
+  font-family: var(--font-serif);
   font-size: clamp(30px, 4vw, 44px);
   line-height: 1.5;
   margin-top: 28px;
@@ -686,12 +686,14 @@ p {
   }
 }
 .site-footer {
+  min-height: 40px;
   display: flex;
-  justify-content: space-between;
-  padding: 22px 40px;
-  font-size: 11px;
-  color: #8496a5;
-  border-top: 1px solid #e1e8ef;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 20px;
+  font-size: 12px;
+  color: var(--color-text-3);
 }
 @media (max-width: 1050px) {
   .topbar {
@@ -816,5 +818,110 @@ p {
     padding: 20px;
     gap: 16px;
     font-size: 10px;
+  }
+}
+
+/* 品牌名称统一使用思源宋体系列，表格/表单仍保持无衬线正文。 */
+.brand > span:last-child {
+  font-family: var(--font-serif);
+}
+.brand-sub {
+  font-family: var(--font-sans);
+}
+
+/* 登录页延续纸张式2px圆角与纯文字品牌，不影响改密页和学习布局。 */
+.login-header.topbar {
+  height: 64px;
+  min-height: 64px;
+  padding: 0 40px;
+  border: 0;
+  background: transparent;
+}
+.login-header .brand {
+  font-size: 26px;
+  line-height: 1;
+  height: 100%;
+  align-items: center;
+}
+.auth-page.login-page {
+  width: min(100%, 1100px);
+  min-height: calc(100dvh - 104px);
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 100px;
+  padding: 48px 40px 72px;
+}
+.login-page .auth-context h1 {
+  margin: 18px 0;
+  font-size: clamp(32px, 3.4vw, 46px);
+  font-weight: 500;
+  line-height: 1.55;
+  letter-spacing: 1px;
+}
+.login-page .login-intro {
+  color: rgb(var(--primary-6));
+  font-size: 13px;
+  margin: 0;
+}
+.login-page .auth-context > p:last-child {
+  margin: 0;
+  font-size: 14px;
+  color: var(--color-text-3);
+}
+.login-page .auth-panel {
+  border: 1px solid var(--color-border-2);
+  border-radius: 2px;
+  padding: 36px;
+  box-shadow: 0 6px 24px rgb(23 55 77 / 3%);
+}
+.login-page .auth-panel h2 {
+  font-size: 23px;
+  margin: 0 0 10px;
+  font-weight: 500;
+}
+.login-page .auth-panel h2 .brand-wordmark {
+  margin-left: 6px;
+  font-weight: 600;
+}
+.login-page .auth-panel > p {
+  margin-bottom: 0;
+  color: var(--color-text-3);
+}
+.login-page .auth-panel .arco-form {
+  margin-top: 28px;
+}
+.login-page .auth-panel .arco-input-wrapper {
+  border-radius: 2px;
+}
+.login-page .auth-panel .arco-btn-primary {
+  height: 36px;
+  border-radius: 2px;
+}
+.login-page .auth-panel .auth-note {
+  margin-top: 20px;
+  font-size: 12px;
+}
+@media (max-width: 900px) {
+  .auth-page.login-page {
+    max-width: 500px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+    padding: 28px 24px 48px;
+    align-content: center;
+  }
+  .login-page .auth-context h1 {
+    font-size: 30px;
+    line-height: 1.4;
+    margin: 12px 0;
+  }
+  .login-page .auth-context h1 br {
+    display: none;
+  }
+  .login-header.topbar {
+    padding: 0 24px;
+  }
+}
+@media (max-width: 480px) {
+  .login-page .auth-panel {
+    padding: 28px 24px;
   }
 }

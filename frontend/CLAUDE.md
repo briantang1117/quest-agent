@@ -35,6 +35,12 @@ ESLint 10 使用 `eslint.config.mjs` flat config，检查 JS、TypeScript 和 Vu
 
 WebStorm 可直接打开本目录，使用 `Quest PC` / `Quest Mobile` Run 配置或 `bash start-pc.sh` / `bash start-mobile.sh`。启动脚本支持 `QUEST_PNPM_BIN`，并查找 macOS 的 `~/Library/pnpm/pnpm`。开发服务监听 `0.0.0.0`，仅用于可信网络；端口设置了 `strictPort`，冲突时不会自动换端口。
 
+## UI复用约定
+
+后续页面先读[docs/UI规范.md](docs/UI规范.md)，按用户最终确定的后台规整布局和字体延续，不复活早期宣传式说明。Admin独立58px navbar一级/220或48px侧栏二三级/全宽内容/40px居中footer；一级和三级不放图标，二级分组可有图标，折叠用Arco图标。右上头像下拉，后台左上纯文字“知序｜管理后台”。卡片2px圆角，Modal标准footer右下取消/提交，不用!important抢样式。
+
+字体在线Google Fonts，不打包字体资源。正文Noto Sans SC→Noto Sans→PingFang SC→Microsoft YaHei→system-ui→sans-serif；品牌及原宋体区Noto Serif SC→Noto Serif→Songti SC→STSong→SimSun→system-ui→serif。Footer仅品牌“知序”衬线，宣传语正文黑体。shared/fonts.css与Arco Less/Vant字体token同步，不靠用户机器预装思源字体。
+
 ## 架构与代码流
 
 - `pc-web`（`@quest/pc-web`）：Vue 3 + Vue Router + Pinia + Arco Design Vue。当前 `/practice` 使用练习布局，`/admin` 与 `/admin/agent` 使用管理布局，`/login` 是服务连接与手动 Token 验证页，不是真实登录流程。
@@ -74,7 +80,7 @@ Vite 将 `/gateway` 请求转发给 Java，并去掉该前缀。因此 base URL 
 
 PC已实现真实登录/改密/登出、Admin用户管理和角色路由守卫；其认证store为shared/src/auth.ts。按用户要求将token、expiresAt和baseURL存入localStorage的quest.auth.session，不缓存用户资料/角色/密码；刷新后先调用/auth/me校验成功才进入业务页，过期/401/登出清缓存。不延长后端2h会话，不提供Refresh Token。localStorage有同源脚本可读的XSS风险，生产可另行迁移HttpOnly Cookie方案。手动连接诊断store仍保持仅内存，与真实认证隔离。
 
-PC品牌主题在pc-web/theme.ts仅设置arcoblue-6=#087d84，ArcoResolver importStyle=less，Vite Less自动生成色阶；不要手写少量CSS primary变量或按钮背景覆盖。品牌单字标识为“序”，名称“知序”。登录只校验用户名/密码必填，不展示新密码规则；创建/重置/改密仍使用完整口令规则。
+PC品牌主题在pc-web/theme.ts仅设置arcoblue-6=#087d84，ArcoResolver importStyle=less，Vite Less自动生成色阶；不要手写少量CSS primary变量或按钮背景覆盖。品牌名称“知序”，Admin左上纯文字无图标，其他页面现有单字标识为“序”。登录只校验用户名/密码必填，不展示新密码规则；创建/重置/改密仍使用完整口令规则。
 
 题库、练习、Agent和用量统计仍未接入，移动端仍是Agent骨架；不要用假数据掩盖未实现业务。
 

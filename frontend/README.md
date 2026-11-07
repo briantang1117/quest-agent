@@ -1,5 +1,7 @@
 # WebStorm：独立前端工程
 
+**后续页面复用：[UI规范与本轮调整总结](docs/UI规范.md)**（Admin导航/全宽布局、字体降级、Arco主题、列表/Modal和文案约定）。
+
 **Open选择frontend/**。该目录现在是完整pnpm workspace根，拥有package.json、pnpm-workspace.yaml、pnpm-lock.yaml，不需要根仓库package.json。
 
 两个应用共用shared，所以推荐打开frontend整体，不只单独拷贝pc-web；这属于前端内部共享，不依赖Java/Python/根启动脚本。
@@ -94,11 +96,21 @@ WebStorm 打开 `frontend/` 时，在 Settings → Languages & Frameworks → Ja
 
 单元测试覆盖shared、PC用户页面/路由/代理与Arco Less主题编译；构建产物为pc-web/dist和mobile-agent/dist。
 
+## Admin后台布局
+
+参考用户提供的super-order-admin后台规范，Admin与学习页面使用不同外壳：顶部58px一级“系统管理”，左侧220/48px可折叠二三级菜单“用户管理→用户列表”，内容区左右16px且不设max-width，40px居中正常流Footer。仅管理已实现功能，不添加假导航或权限解释段落。
+
+用户列表为2px圆角白色Arco卡片，筛选响应式栅格+右侧查询/清空、分隔线、操作工具栏、表格和分页；弹窗使用标准footer“取消→提交”，先form.validate再调用接口，错误保留弹窗，处理中禁止重复操作。顶部一级/侧栏三级无图标，二级分组保留图标，折叠用Arco图标。右上头像下拉收纳改密/退出。尺寸样式集中在pc-web/src/layouts/admin-layout.css，普通用户布局不套Admin侧栏。
+
 ## PC主题与登录状态
 
 PC的pc-web/theme.ts通过Less modifyVars设置arcoblue-6=#087d84，Arco按需引入Less，自动生成完整色阶；编译器less在前端workspace根统一安装，避免Vite可选peer依赖类型分裂。改theme/Vite配置或新增依赖后重启PC开发服务。
 
-品牌单字标识使用“序”，名称仍为“知序”。登录页只提示必填，不把新密码规则或平台内部管理说明展示给登录用户。
+后台品牌为纯文字“知序｜管理后台”，登录/改密页同样纯文字无图标，学习/移动页面其余单字标识仍为“序”。品牌与原宋体区域使用共享--font-serif（Noto Serif SC在线字体，Songti SC/SimSun降级）。默认正文--font-sans为Noto Sans SC→Noto Sans→PingFang SC→Microsoft YaHei→system-ui→sans-serif，Arco/Vant同步使用；Footer品牌衬线、宣传语无衬线。Google Fonts通过shared/fonts.css引入，不打包字体资源；网络失败使用本地降级。登录页只提示必填，不把新密码规则或平台内部管理说明展示给登录用户。
+
+登录/改密共享纸张式2px卡片与留白，认证失败/改密结果使用Arco顶部Message，不插入红色Alert；登录卡片不显示会话过期条，主动退出不误报到期。新密码规则和首次改密权限保持。
+
+Vue三个应用/共享包声明统一^3.5.45，当前锁定3.5.45；2026-11-07查询npm latest为3.5.45，3.6仍RC，不引入预发布。
 
 真实认证在localStorage的quest.auth.session保存token、expiresAt、baseURL，刷新后先通过/auth/me恢复真实身份；不保存密码或缓存角色。不延长后端2h有效期，无Refresh Token；过期/401/登出清缓存。localStorage可被同源脚本读取，生产应评估HttpOnly Cookie升级。开发诊断Token仍仅内存。
 

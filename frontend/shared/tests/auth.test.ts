@@ -240,6 +240,21 @@ describe('持久化凭据恢复与会话竞态', () => {
     expect(seen).toContainEqual(['/api/v1/auth/logout', 'Bearer new', {}])
     expect(auth.token).toBe('')
   })
+  it('主动登出后卸载组件的请求不会把退出误标为过期', async () => {
+    const transport = vi.fn(async (config: InternalAxiosRequestConfig) =>
+      response(config, config.url?.endsWith('/logout') ? null : result()),
+    )
+    const auth = setup(transport)
+    await auth.login({ username: 'student_a', password: 'password1234' })
+    await auth.logout()
+    await expect(auth.request({ url: '/api/v1/admin/users' })).rejects.toMatchObject({
+      code: 40100,
+    })
+    expect(auth.sessionNotice).toBe('')
+    expect(auth.authenticated).toBe(false)
+    expect(localStorage.getItem('quest.auth.session')).toBeNull()
+    expect(transport).toHaveBeenCalledTimes(2)
+  })
   it('旧me成功响应在登出后不会恢复身份', async () => {
     const pending = deferred<ReturnType<typeof response>>()
     let config!: InternalAxiosRequestConfig

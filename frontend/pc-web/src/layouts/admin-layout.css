@@ -1,0 +1,281 @@
+.admin-shell {
+  --admin-navbar-height: 58px;
+  --admin-menu-width: 220px;
+  min-height: 100dvh;
+  color: var(--color-text-1);
+  background: var(--color-fill-2);
+}
+.admin-shell.is-collapsed {
+  --admin-menu-width: 48px;
+}
+.admin-navbar {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 100;
+  height: var(--admin-navbar-height);
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--color-border-2);
+  background: var(--color-bg-2);
+  padding-right: 16px;
+}
+.admin-brand {
+  width: 220px;
+  flex: 0 0 220px;
+  height: 100%;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px;
+  font-size: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.admin-brand-name {
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+}
+.admin-brand-label {
+  border-left: 1px solid var(--color-border-2);
+  padding-left: 10px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-text-3);
+}
+.admin-navbar > .arco-menu {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+}
+.admin-account {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+.admin-avatar-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 2px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--color-text-1);
+  cursor: pointer;
+  text-align: left;
+}
+.admin-avatar-trigger:hover {
+  background: var(--color-fill-2);
+}
+.admin-avatar-trigger .arco-avatar {
+  background: rgb(var(--primary-1));
+  color: rgb(var(--primary-6));
+  flex-shrink: 0;
+}
+.admin-account-name {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.admin-account-role {
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+.admin-avatar-trigger > .arco-icon {
+  margin-left: 8px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+.admin-sidebar {
+  position: fixed;
+  top: var(--admin-navbar-height);
+  bottom: 0;
+  left: 0;
+  z-index: 90;
+  width: var(--admin-menu-width);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-menu-light-bg);
+  border-right: 1px solid var(--color-border-2);
+  transition: width 0.2s;
+}
+.admin-sidebar > .arco-menu {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-top: 12px;
+}
+.admin-sidebar .arco-icon {
+  font-size: 18px;
+}
+.admin-collapse.arco-btn {
+  width: 100%;
+  height: 40px;
+  min-height: 40px;
+  border-radius: 0;
+  background: var(--color-bg-2);
+  border-top: 1px solid var(--color-border-2);
+  color: var(--color-text-3);
+  gap: 10px;
+}
+.admin-collapse .arco-icon {
+  font-size: 18px;
+}
+.admin-content-shell {
+  margin-left: var(--admin-menu-width);
+  padding-top: var(--admin-navbar-height);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  transition: margin-left 0.2s;
+}
+.admin-content {
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+  padding: 0 16px 16px;
+}
+.admin-breadcrumb {
+  padding: 12px 0;
+}
+.admin-footer {
+  height: 40px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--color-text-3);
+  text-align: center;
+}
+.admin-shell .admin-users-card.arco-card {
+  width: 100%;
+  border-radius: 2px;
+}
+.admin-users-card > .arco-card-header {
+  padding: 16px 20px;
+  height: auto;
+  border-bottom: 0;
+}
+.admin-users-card > .arco-card-body {
+  padding: 0 20px 16px;
+}
+.user-filter-area {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+}
+.user-filter-form {
+  flex: 1;
+  min-width: 0;
+}
+.user-filter-form .arco-form-item {
+  margin-bottom: 0;
+}
+.user-filter-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 20px;
+  border-left: 1px solid var(--color-border-2);
+}
+.user-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.user-toolbar-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+.admin-users-card .arco-table {
+  width: 100%;
+}
+.admin-users-card .user-pagination {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+.admin-users-card .user-pagination > span {
+  margin-right: auto;
+}
+.admin-users-card .arco-alert {
+  margin-bottom: 16px;
+}
+.user-dialog .arco-modal-body {
+  max-height: min(600px, calc(100dvh - 180px));
+  overflow: auto;
+  padding: 24px;
+}
+.user-dialog .arco-form-item:last-child {
+  margin-bottom: 0;
+}
+.user-dialog .arco-modal-footer {
+  padding: 12px 24px;
+}
+.user-dialog .arco-modal-footer .arco-btn {
+  min-width: 72px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .admin-sidebar,
+  .admin-content-shell {
+    transition: none;
+  }
+}
+@media (max-width: 900px) {
+  .admin-brand {
+    width: 180px;
+    flex-basis: 180px;
+  }
+  .admin-account {
+    gap: 8px;
+  }
+  .admin-account > span {
+    display: none;
+  }
+  .user-filter-area {
+    align-items: stretch;
+  }
+  .user-filter-form .arco-col {
+    margin-bottom: 12px;
+  }
+}
+@media (max-width: 600px) {
+  .admin-brand {
+    width: 100px;
+    flex-basis: 100px;
+    padding: 0 12px;
+  }
+  .admin-brand > span:last-child {
+    display: none;
+  }
+  .admin-navbar {
+    padding-right: 8px;
+  }
+  .admin-account > a {
+    display: none;
+  }
+  .admin-content {
+    padding: 0 12px 12px;
+  }
+  .user-filter-area {
+    display: block;
+  }
+  .user-filter-actions {
+    flex-direction: row;
+    border: 0;
+    padding: 0;
+  }
+  .admin-users-card > .arco-card-body {
+    padding: 0 12px 12px;
+  }
+  .admin-account-name {
+    display: none;
+  }
+}

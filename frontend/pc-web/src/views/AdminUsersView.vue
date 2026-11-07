@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import type { FormInstance } from '@arco-design/web-vue'
+import { IconSearch, IconRefresh, IconPlus } from '@arco-design/web-vue/es/icon'
+const userForm = ref<FormInstance>()
 import {
   createUserApi,
   errorMessage,
@@ -67,6 +70,18 @@ function filter() {
   query.status = filters.status
   query.page = 1
   void load()
+}
+function resetFilters() {
+  filters.keyword = ''
+  filters.status = ''
+  filter()
+}
+async function submitDialog() {
+  if (saving.value) return
+  if (mode.value !== 'status') {
+    if (!userForm.value || (await userForm.value.validate())) return
+  }
+  await save()
 }
 function pageChange(page: number) {
   query.page = page
@@ -141,43 +156,55 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <section class="page-heading">
-    <div>
-      <p class="breadcrumb">管理工作台 / 账号</p>
-      <h1>用户管理</h1>
-      <p class="lead">管理普通用户的访问资格，不触及用户的私有学习内容。</p>
-    </div>
-    <a-button data-test="create-user" type="primary" :disabled="saving" @click="open('create')"
-      >创建用户</a-button
-    >
-  </section>
-  <a-alert v-if="success" type="success" role="status">{{ success }}</a-alert>
-  <section class="panel user-panel" aria-label="普通用户列表">
-    <form data-test="filter" class="user-filters" @submit.prevent="filter">
-      <div>
-        <label for="user-keyword">用户名或展示名</label
-        ><a-input
-          v-model="filters.keyword"
-          :input-attrs="{ id: 'user-keyword' }"
-          placeholder="输入关键词"
-          allow-clear
-        />
-      </div>
-      <div>
-        <label for="user-status">账号状态</label
-        ><a-select v-model="filters.status" input-id="user-status" aria-label="账号状态"
-          ><a-option value="">全部状态</a-option><a-option value="active">启用</a-option
-          ><a-option value="disabled">禁用</a-option></a-select
+  <a-card class="admin-users-card" title="用户管理" :bordered="false">
+    <a-alert v-if="success" type="success" role="status">{{ success }}</a-alert>
+    <form data-test="filter" class="user-filter-area" @submit.prevent="filter">
+      <a-form
+        :model="filters"
+        layout="horizontal"
+        auto-label-width
+        class="user-filter-form"
+        :disabled="loading || saving"
+        :tag="'div'"
+      >
+        <a-row :gutter="16">
+          <a-col :xs="24" :md="12" :xl="8">
+            <a-form-item label="用户名称"
+              ><a-input
+                v-model="filters.keyword"
+                :input-attrs="{ id: 'user-keyword' }"
+                placeholder="请输入用户名或展示名"
+                allow-clear
+            /></a-form-item>
+          </a-col>
+          <a-col :xs="24" :md="12" :xl="8">
+            <a-form-item label="账号状态"
+              ><a-select v-model="filters.status" input-id="user-status" aria-label="账号状态"
+                ><a-option value="">全部</a-option><a-option value="active">启用</a-option
+                ><a-option value="disabled">禁用</a-option></a-select
+              ></a-form-item
+            >
+          </a-col>
+        </a-row>
+      </a-form>
+      <div class="user-filter-actions">
+        <a-button html-type="submit" :disabled="loading || saving" type="primary"
+          ><template #icon><IconSearch /></template>查询</a-button
+        >
+        <a-button data-test="reset-filters" :disabled="loading || saving" @click="resetFilters"
+          ><template #icon><IconRefresh /></template>清空</a-button
         >
       </div>
-      <a-button html-type="submit" :disabled="loading || saving" type="primary">筛选</a-button>
-      <a-button data-test="refresh-users" :loading="loading" :disabled="saving" @click="load"
-        >刷新列表</a-button
-      >
     </form>
-    <p class="table-note">
-      只列出普通用户账号。时间按北京时间显示；不展示私有题库、题目、附件或对话。
-    </p>
+    <a-divider />
+    <div class="user-toolbar">
+      <a-button data-test="create-user" type="primary" :disabled="saving" @click="open('create')"
+        ><template #icon><IconPlus /></template>新增用户</a-button
+      >
+      <a-button data-test="refresh-users" :loading="loading" :disabled="saving" @click="load"
+        ><template #icon><IconRefresh /></template>刷新</a-button
+      >
+    </div>
     <a-alert v-if="error" type="error" role="alert"
       >列表加载失败：{{ error }}。可点击刷新列表重试。</a-alert
     >
@@ -259,17 +286,14 @@ onBeforeUnmount(() => {
         @page-size-change="sizeChange"
       />
     </div>
-  </section>
-  <p class="privacy-note">
-    账号管理与学习工作区相互隔离。使用量统计尚未接入，本页不提供内容预览或模拟登录。
-  </p>
+  </a-card>
   <a-modal
     :visible="mode !== null"
     :title="title"
     title-align="start"
-    :footer="false"
+    modal-class="user-dialog"
     :width="520"
-    :mask-closable="!saving"
+    :mask-closable="false"
     :closable="!saving"
     :esc-to-close="!saving"
     unmount-on-close
@@ -287,29 +311,20 @@ onBeforeUnmount(() => {
             : '启用后用户可使用现有密码重新登录，不会恢复已撤销的会话。'
         }}
       </p>
-      <div class="dialog-actions">
-        <a-button :disabled="saving" @click="close">取消</a-button
-        ><a-button
-          data-test="confirm-action"
-          type="primary"
-          :status="selected?.status === 'active' ? 'danger' : 'normal'"
-          :loading="saving"
-          @click="save"
-          >确认{{ title }}</a-button
-        >
-      </div>
     </template>
     <a-form
       v-else
       :key="mode ?? 'closed'"
+      ref="userForm"
       data-test="user-form"
       :model="form"
-      layout="vertical"
+      layout="horizontal"
+      :label-col-props="{ span: 5 }"
+      :wrapper-col-props="{ span: 19 }"
       :disabled="saving"
       @submit-success="save"
     >
       <template v-if="mode === 'create'">
-        <p>仅创建普通用户，不创建管理员。初始密码由你设置，请通过安全渠道单独交付。</p>
         <a-form-item
           field="username"
           label="用户名"
@@ -345,12 +360,17 @@ onBeforeUnmount(() => {
             v-model="form.newPassword"
             :input-attrs="{ id: 'reset-password', autocomplete: 'new-password' }" /></a-form-item
       ></template>
-      <div class="dialog-actions">
-        <a-button :disabled="saving" @click="close">取消</a-button
-        ><a-button html-type="submit" type="primary" :loading="saving">{{
-          mode === 'create' ? '创建用户' : '确认重置密码'
-        }}</a-button>
-      </div>
     </a-form>
+    <template #footer>
+      <a-button :disabled="saving" @click="close">取消</a-button>
+      <a-button
+        data-test="confirm-action"
+        type="primary"
+        :status="mode === 'status' && selected?.status === 'active' ? 'danger' : 'normal'"
+        :loading="saving"
+        @click="submitDialog"
+        >{{ mode === 'create' ? '提交' : mode === 'reset' ? '确认重置' : '确认' + title }}</a-button
+      >
+    </template>
   </a-modal>
 </template>

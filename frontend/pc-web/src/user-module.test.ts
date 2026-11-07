@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
-import ArcoVue from '@arco-design/web-vue'
+import ArcoVue, { Message } from '@arco-design/web-vue'
 import axios, { type AxiosResponse, type InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore, type UserProfile } from '@quest/shared'
 import { createAppRouter } from './router'
@@ -40,7 +40,8 @@ async function render(component: typeof LoginView, path: string, authenticated =
   await router.push(path)
   await router.isReady()
   const wrapper = mount(component, {
-    global: { plugins: [pinia, router, ArcoVue], stubs: { teleport: true } },
+    attachTo: document.body,
+    global: { plugins: [pinia, router, ArcoVue], stubs: { teleport: component !== App } },
   })
   wrappers.push(wrapper)
   await flushPromises()
@@ -53,6 +54,7 @@ beforeEach(() => {
   profile = { ...student }
   requests = []
   failureCode = 0
+  Object.defineProperty(window, 'innerWidth', { configurable: true, writable: true, value: 1440 })
   vi.stubGlobal(
     'ResizeObserver',
     class {
@@ -96,13 +98,16 @@ afterEach(() => {
   for (const wrapper of wrappers) wrapper.unmount()
   wrappers = []
   useAuthStore().clearSession()
+  Message.clear()
   axios.defaults.adapter = adapter
   vi.unstubAllGlobals()
 })
 describe('PC真实认证页面', () => {
   it('登录校验并提交真实凭据，首次改密不进入业务页', async () => {
     const { wrapper, router } = await render(LoginView, '/login?next=/admin/users')
-    expect(wrapper.get('.brand-mark').text()).toBe('序')
+    expect(wrapper.find('.brand-mark').exists()).toBe(false)
+    expect(wrapper.find('.login-page').exists()).toBe(true)
+    expect(wrapper.get('#login-title .brand-wordmark').text()).toBe('知序')
     expect(wrapper.text()).not.toContain('管理员只管理账号')
     expect(wrapper.text()).not.toContain('账号由管理员提供')
     expect(wrapper.text()).not.toContain('UTF-8')
@@ -130,14 +135,38 @@ describe('PC真实认证页面', () => {
     expect(JSON.parse(requests[0]!.data).password).toBe(' short ')
     expect(wrapper.text()).not.toContain('12–64')
   })
-  it('登录失败显示traceId，不清理成通用网络错误', async () => {
+  it.each([
+    [40100, '用户名或密码不正确'],
+    [42900, '登录尝试过于频繁，请稍后再试'],
+    [50300, '登录服务暂时不可用，请稍后重试'],
+  ])('登录失败%s显示友好提示，不展示内部错误或traceId', async (code, message) => {
     const { wrapper } = await render(LoginView, '/login')
-    failureCode = 42900
+    failureCode = code as number
     await fill(wrapper, 'username', 'student_a')
     await fill(wrapper, 'password', 'password1234')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    expect(wrapper.text()).toContain('trace-page')
+    await vi.waitFor(() =>
+      expect(document.querySelector('.arco-message-content')?.textContent).toBe(message),
+    )
+    expect(wrapper.find('.auth-panel [role="alert"]').exists()).toBe(false)
+    expect(document.querySelector('.arco-message')?.textContent).not.toContain('trace-page')
+    expect(wrapper.text()).not.toContain('trace-page')
+    expect(wrapper.text()).not.toContain('请求被拒绝')
+  })
+  it('登录页不显示会话过期条，主动退出后保持干净表单', async () => {
+    const { wrapper, auth } = await render(LoginView, '/login')
+    auth.sessionNotice = '登录已过期，请重新登录'
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('登录已过期')
+    expect(wrapper.find('.auth-panel .arco-alert').exists()).toBe(false)
+  })
+  it('改密页使用登录页纸张布局和纯文字品牌，不显示内部会话说明', async () => {
+    const { wrapper } = await render(App, '/change-password', true)
+    expect(wrapper.find('.password-page.login-page').exists()).toBe(true)
+    expect(wrapper.find('.login-header .brand-mark').exists()).toBe(false)
+    expect(wrapper.find('.login-header .brand-sub').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('改密会撤销旧会话')
   })
   it('改密验证UTF8和重复密码，成功后按身份分流', async () => {
     const { wrapper, router } = await render(ChangePasswordView, '/change-password', true)
@@ -168,7 +197,12 @@ describe('用户管理页面', () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
     const { wrapper } = await render(AdminUsersView, '/admin/users', true)
     expect(wrapper.text()).toContain('学员甲')
-    expect(wrapper.text()).toContain('9007199254740993')
+    expect(wrapper.text()).not.toContain('管理普通用户的访问资格')
+    expect(wrapper.text()).not.toContain('只列出普通用户账号')
+    expect(wrapper.text()).not.toContain('不展示私有题库')
+    expect(wrapper.text()).not.toContain('使用量统计尚未接入')
+    expect(wrapper.find('[data-test="reset-filters"]').exists()).toBe(true)
+    expect(wrapper.find('.user-toolbar [data-test="create-user"]').exists()).toBe(true)
     await fill(wrapper, 'user-keyword', 'student')
     await wrapper.get('[data-test="filter"]').trigger('submit')
     await flushPromises()
@@ -201,6 +235,32 @@ describe('用户管理页面', () => {
     const count = requests.length
     await new Promise((r) => setTimeout(r, 30))
     expect(requests.length).toBe(count)
+  })
+  it('查询清空回第一页，弹窗底部提交先校验且失败不关闭', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    const { wrapper } = await render(AdminUsersView, '/admin/users', true)
+    await fill(wrapper, 'user-keyword', 'student')
+    await wrapper.get('[data-test="filter"]').trigger('submit')
+    await flushPromises()
+    await wrapper.get('[data-test="reset-filters"]').trigger('click')
+    await flushPromises()
+    expect(requests.at(-1)?.params).toMatchObject({ page: 1, keyword: '', status: '' })
+    await wrapper.get('[data-test="create-user"]').trigger('click')
+    await flushPromises()
+    const before = requests.length
+    await wrapper.get('.arco-modal-footer [data-test="confirm-action"]').trigger('click')
+    await flushPromises()
+    expect(requests.length).toBe(before)
+    expect(wrapper.find('[data-test="user-form"]').exists()).toBe(true)
+    await fill(wrapper, 'create-username', 'new_student')
+    await fill(wrapper, 'create-display-name', '新用户')
+    await fill(wrapper, 'initial-password', 'password1234')
+    failureCode = 40900
+    await wrapper.get('.arco-modal-footer [data-test="confirm-action"]').trigger('click')
+    await flushPromises()
+    expect(requests.length).toBe(before + 1)
+    expect(wrapper.find('[data-test="user-form"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('trace-page')
   })
   it('分页、状态筛选和页大小来自接口，不触发轮询', async () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
@@ -260,6 +320,13 @@ describe('用户管理页面', () => {
   })
 })
 describe('实际路由和导航', () => {
+  it('登录页外壳只显示纯文字品牌，不影响next跳转路径', async () => {
+    const { wrapper, router } = await render(App, '/login?next=/admin/users')
+    expect(wrapper.find('.login-header .brand-mark').exists()).toBe(false)
+    expect(wrapper.get('.login-header .brand').text()).toBe('知序')
+    expect(wrapper.find('.login-header .brand-sub').exists()).toBe(false)
+    expect(router.currentRoute.value.query.next).toBe('/admin/users')
+  })
   it('刷新新store后先向me核验身份再进入原管理页，不相信缓存角色', async () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
     localStorage.setItem(
@@ -288,6 +355,71 @@ describe('实际路由和导航', () => {
     await router.push('/dev/connection')
     expect(router.currentRoute.value.path).toBe('/login')
   })
+  it('Admin使用独立全宽后台，一级navbar和侧栏分层且支持折叠', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    const { wrapper } = await render(App, '/admin/users', true)
+    expect(wrapper.find('.admin-shell').exists()).toBe(true)
+    expect(wrapper.find('.admin-navbar [aria-label="一级导航"]').text()).toContain('系统管理')
+    expect(wrapper.find('.admin-sidebar').text()).toContain('用户管理')
+    expect(wrapper.find('.topbar').exists()).toBe(false)
+    expect(wrapper.find('.site-footer').exists()).toBe(false)
+    expect(wrapper.find('.admin-footer').exists()).toBe(true)
+    expect(wrapper.find('.admin-navbar .arco-menu-item .arco-menu-icon').exists()).toBe(false)
+    expect(wrapper.find('.admin-sidebar .arco-menu-item .arco-icon').exists()).toBe(false)
+    expect(wrapper.find('[data-test="account-menu-trigger"] .arco-avatar').exists()).toBe(true)
+    expect(wrapper.find('.admin-account > a').exists()).toBe(false)
+    expect(wrapper.find('.sidebar-note').exists()).toBe(false)
+    expect(wrapper.find('.admin-brand .brand-mark').exists()).toBe(false)
+    expect(wrapper.get('.admin-brand-name').text()).toBe('知序')
+    expect(wrapper.get('.admin-brand-label').text()).toBe('管理后台')
+    expect(wrapper.find('[data-test="collapse-menu"] .arco-icon-menu-fold').exists()).toBe(true)
+    expect(wrapper.get('[data-test="collapse-menu"]').text()).not.toContain('收起菜单')
+    await wrapper.get('[data-test="collapse-menu"]').trigger('click')
+    expect(wrapper.find('.admin-shell').classes()).toContain('is-collapsed')
+    expect(wrapper.find('[data-test="collapse-menu"] .arco-icon-menu-unfold').exists()).toBe(true)
+  })
+  it('初始窄屏菜单真正折叠，手动展开与缩放始终同步组件状态', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    window.innerWidth = 560
+    const { wrapper } = await render(App, '/admin/users', true)
+    const sidebarMenu = () => wrapper.get('.admin-sidebar').findComponent({ name: 'BaseMenu' })
+    expect(wrapper.get('.admin-shell').classes()).toContain('is-collapsed')
+    expect(sidebarMenu().props('collapsed')).toBe(true)
+    expect(wrapper.get('[data-test="collapse-menu"]').attributes('aria-expanded')).toBe('false')
+    await wrapper.get('[data-test="collapse-menu"]').trigger('click')
+    expect(wrapper.get('.admin-shell').classes()).not.toContain('is-collapsed')
+    expect(sidebarMenu().props('collapsed')).toBe(false)
+    window.innerWidth = 1440
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    window.innerWidth = 560
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(sidebarMenu().props('collapsed')).toBe(true)
+    expect(wrapper.get('.admin-shell').classes()).toContain('is-collapsed')
+    expect(wrapper.find('[data-test="collapse-menu"] .arco-icon-menu-unfold').exists()).toBe(true)
+  })
+  it('跨断点恢复桌面偏好，同一窄屏区间resize不覆盖手动选择，卸载移除监听', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    const remove = vi.spyOn(window, 'removeEventListener')
+    const { wrapper } = await render(App, '/admin/users', true)
+    window.innerWidth = 560
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    await wrapper.get('[data-test="collapse-menu"]').trigger('click')
+    window.innerWidth = 570
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(wrapper.get('.admin-shell').classes()).not.toContain('is-collapsed')
+    window.innerWidth = 1440
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+    expect(wrapper.get('.admin-shell').classes()).not.toContain('is-collapsed')
+    wrapper.unmount()
+    wrappers = wrappers.filter((item) => item !== wrapper)
+    expect(remove).toHaveBeenCalledWith('resize', expect.any(Function))
+    remove.mockRestore()
+  })
   it('Admin没有学习和Agent入口，直接路由也被隔离，登出清身份', async () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
     const { wrapper, router, auth } = await render(App, '/admin/users', true)
@@ -297,7 +429,10 @@ describe('实际路由和导航', () => {
     expect(router.currentRoute.value.path).toBe('/admin/users')
     await router.push('/practice/agent')
     expect(router.currentRoute.value.path).toBe('/admin/users')
-    await wrapper.get('[data-test="logout"]').trigger('click')
+    await wrapper.get('[data-test="account-menu-trigger"]').trigger('click')
+    await flushPromises()
+    await vi.waitFor(() => expect(document.querySelector('[data-test="logout"]')).not.toBeNull())
+    ;(document.querySelector('[data-test="logout"]') as HTMLElement).click()
     await flushPromises()
     expect(auth.authenticated).toBe(false)
     expect(router.currentRoute.value.path).toBe('/login')

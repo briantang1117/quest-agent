@@ -4,6 +4,7 @@ export default defineConfig({
   plugins: [vue()],
   test: {
     environment: 'jsdom',
+    setupFiles: ['./src/test-setup.ts'],
     pool: 'forks',
     poolOptions: { forks: { execArgv: ['--no-experimental-webstorage'] } },
   },

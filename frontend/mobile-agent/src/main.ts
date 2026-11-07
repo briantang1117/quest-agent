@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import { useConnectionStore } from '@quest/shared/connection'
 import { router } from './router'
 import App from './App.vue'
+import '@quest/shared/fonts.css'
 import './style.css'
 const app = createApp(App)
 app.use(createPinia())
