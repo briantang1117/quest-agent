@@ -1,0 +1,27 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      initialization-fail-timeout: 10000
+  flyway:
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
+    locations: ${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}
+    fail-on-missing-locations: true
+    validate-migration-naming: true
+    clean-disabled: true
+    user: ${SPRING_FLYWAY_USER}
+    password: ${SPRING_FLYWAY_PASSWORD}
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: readinessState,db
+quest:
+  persistence:
+    mode: postgresql

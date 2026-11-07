@@ -1,0 +1,9 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+# 根目录仅保留命令转发；实际前端版本锁定在 frontend/pnpm-lock.yaml。
+importers:
+  .: {}

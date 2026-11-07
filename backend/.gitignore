@@ -1,0 +1,12 @@
+# backend可独立作为IDEA工程，禁止提交本机凭据。
+.env.*.properties
+!.env.*.properties.example
+.idea/
+tools/
+**/target/
+**/.venv/
+**/__pycache__/
+**/.env
+**/.env.local
+*.log
+.DS_Store

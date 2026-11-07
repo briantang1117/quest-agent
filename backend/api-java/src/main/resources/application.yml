@@ -1,0 +1,37 @@
+spring:
+  config:
+    # backend 是IDEA工程根；可通过环境变量覆盖，文件禁止提交。
+    import: optional:file:./.env.api.properties
+  application:
+    name: api-java
+  profiles:
+    default: local
+  jackson:
+    time-zone: UTC
+    # Jackson 3 默认将 java.time 类型输出为 ISO-8601，旧版 SerializationFeature 已移除。
+server:
+  port: ${SERVER_PORT:8080}
+  error:
+    include-message: never
+    include-stacktrace: never
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState
+quest:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:}
+      issuer: ${JWT_ISSUER:quest-api}
+      audience: ${JWT_AUDIENCE:quest-web}
+  persistence:
+    mode: disabled

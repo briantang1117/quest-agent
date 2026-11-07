@@ -1,0 +1,15 @@
+name: quest-nas
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请配置 NAS 管理用户名}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请配置 NAS 管理密码}
+    volumes:
+      - ${NAS_DATA_DIR:?请指定 NAS 真实目录}:/data
+    ports:
+      - '9000:9000'
+      # 控制台默认仅 NAS 本机可访问，开放前配置管理员网段防火墙。
+      - '127.0.0.1:9001:9001'
+    restart: unless-stopped

@@ -1,0 +1,33 @@
+# 在群晖 Container Manager 中直接部署；无 build，不使用 Mac 本地镜像。
+services:
+  minio:
+    # PGSTY 维护的独立社区 Fork，已由 pgsty/minio 更名为 pgsty/silo。
+    # 已确认公开清单含 amd64；固定发布版与摘要，不读取旧 MINIO_IMAGE。
+    image: pgsty/silo:RELEASE.2026-10-26T00-00-00Z@sha256:7bb2aff6b89efe1cb1303c10fc21d579447434ed06649ac9ec05a5e2dbf30ad7
+    platform: linux/amd64
+    restart: unless-stopped
+    stop_grace_period: 60s
+    command: server /data --address ':9000' --console-address ':9001'
+    environment:
+      TZ: UTC
+      MC_CONFIG_DIR: /tmp/.mc-health
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?请填写 MinIO 管理用户名}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?请填写 MinIO 管理强密码}
+      MINIO_BROWSER_REDIRECT_URL: http://${MINIO_BIND_IP:?请填写群晖局域网 IP}:${MINIO_CONSOLE_PORT:-19001}
+    ports:
+      - '${MINIO_BIND_IP:?请填写群晖局域网 IP}:${MINIO_API_PORT:-19000}:9000'
+      - '${MINIO_BIND_IP:?请填写群晖局域网 IP}:${MINIO_CONSOLE_PORT:-19001}:9001'
+    volumes:
+      - ./data:/data
+    healthcheck:
+      # 当前发布版内置 mcli；检查本机服务和管理员认证，不访问外部服务。
+      test: [CMD-SHELL, 'mcli alias set health http://127.0.0.1:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 && mcli ready health >/dev/null 2>&1']
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'

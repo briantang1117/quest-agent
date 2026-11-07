@@ -1,0 +1,10 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    hikari:
+      initialization-fail-timeout: 10000
+  # API owns migrations. Worker must never receive the owner/migration credentials.
+  flyway:
+    enabled: false

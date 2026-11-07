@@ -1,0 +1,64 @@
+# 开发联调单机版，无ACL认证，仅用于已设置防火墙的可信局域网。
+services:
+  # 仅显式执行 --profile setup 时初始化；不在普通 up 时擅自改现有卷权限。
+  init-permissions:
+    image: apache/rocketmq:5.3.1
+    platform: linux/amd64
+    profiles: [setup]
+    user: '0:0'
+    restart: 'no'
+    entrypoint: [sh, -ec]
+    command:
+      - 'chown 3000:3000 /mnt/namesrv-logs /mnt/broker-store /mnt/broker-logs'
+    volumes:
+      - namesrv-logs:/mnt/namesrv-logs
+      - broker-store:/mnt/broker-store
+      - broker-logs:/mnt/broker-logs
+
+  namesrv:
+    image: apache/rocketmq:5.3.1
+    platform: linux/amd64
+    restart: unless-stopped
+    command: sh mqnamesrv
+    environment:
+      JAVA_OPT_EXT: '-Xms128m -Xmx128m -Xmn64m'
+    ports:
+      - '${RMQ_BIND_IP:?填写群晖内网 IP}:9876:9876'
+    volumes:
+      - namesrv-logs:/home/rocketmq/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  broker:
+    image: apache/rocketmq:5.3.1
+    platform: linux/amd64
+    restart: unless-stopped
+    stop_grace_period: 60s
+    command: sh mqbroker -n namesrv:9876 -c /home/rocketmq/broker.conf
+    environment:
+      JAVA_OPT_EXT: '-Xms512m -Xmx512m -Xmn256m'
+    depends_on:
+      - namesrv
+    ports:
+      # 与 broker.conf 的 listenPort/advertise 地址配套，不能只改外部映射端口。
+      - '${RMQ_BIND_IP:?填写群晖内网 IP}:10911:10911'
+      - '${RMQ_BIND_IP:?填写群晖内网 IP}:10909:10909'
+    volumes:
+      - ./broker.conf:/home/rocketmq/broker.conf:ro
+      - broker-store:/home/rocketmq/store
+      - broker-logs:/home/rocketmq/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+# 独立命名卷仍可能由群晖创建为root:root；首次部署前显式执行setup初始化。
+# 日志目录还包含JVM/应用日志，后续需配置保留周期并监控磁盘。
+volumes:
+  namesrv-logs:
+  broker-store:
+  broker-logs:

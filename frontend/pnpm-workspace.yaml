@@ -1,0 +1,4 @@
+packages:
+  - pc-web
+  - mobile-agent
+  - shared

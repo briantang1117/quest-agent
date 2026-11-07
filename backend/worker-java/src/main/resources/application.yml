@@ -1,0 +1,13 @@
+spring:
+  config:
+    import: optional:file:./.env.worker.properties
+  application:
+    name: worker-java
+  profiles:
+    default: local
+  main:
+    web-application-type: none
+    keep-alive: true
+quest:
+  outbox:
+    enabled: ${OUTBOX_ENABLED:false}

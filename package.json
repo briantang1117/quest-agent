@@ -1,0 +1,13 @@
+{
+  "name": "quest-agent",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": {
+    "dev:pc": "pnpm --dir frontend dev:pc",
+    "dev:mobile": "pnpm --dir frontend dev:mobile",
+    "test": "pnpm --dir frontend test",
+    "typecheck": "pnpm --dir frontend typecheck",
+    "build": "pnpm --dir frontend build"
+  }
+}

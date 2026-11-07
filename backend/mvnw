@@ -1,0 +1,40 @@
+#!/bin/sh
+# 项目独立 Maven：固定工具版本、校验下载、不读取公司 Maven settings。
+set -eu
+BASE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROPS="$BASE/.mvn/wrapper/maven-wrapper.properties"
+VERSION=$(grep '^distributionVersion=' "$PROPS" | cut -d= -f2-)
+URL=$(grep '^distributionUrl=' "$PROPS" | cut -d= -f2-)
+SHA=$(grep '^distributionSha512Sum=' "$PROPS" | cut -d= -f2-)
+HOME_MAVEN="$BASE/tools/distributions/apache-maven-$VERSION"
+# 优先使用独立项目 JDK，忽略 shell 中公司项目遗留的 JAVA_HOME。
+if [ -n "${QUEST_JAVA_HOME:-}" ]; then
+  JAVA_HOME="$QUEST_JAVA_HOME"
+elif [ -d "$BASE/tools/jdk/Contents/Home" ]; then
+  JAVA_HOME="$BASE/tools/jdk/Contents/Home"
+fi
+export JAVA_HOME
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+  printf '%s\n' '请将 JAVA_HOME 指向 JDK 27，或按 backend/README.md 安装项目本地 JDK。' >&2
+  exit 1
+fi
+if ! "$JAVA_HOME/bin/java" -version 2>&1 | grep -Eq 'version "27([.\"]|$)'; then
+  printf '%s\n' '本项目要求 JDK 27；不会修改系统或公司项目的默认 Java。' >&2
+  exit 1
+fi
+if [ ! -x "$HOME_MAVEN/bin/mvn" ]; then
+  mkdir -p "$BASE/tools/downloads" "$BASE/tools/distributions"
+  ARCHIVE="$BASE/tools/downloads/apache-maven-$VERSION-bin.zip"
+  if [ ! -f "$ARCHIVE" ]; then
+    curl --fail --location --retry 3 "$URL" -o "$ARCHIVE.part"
+    mv "$ARCHIVE.part" "$ARCHIVE"
+  fi
+  ACTUAL=$(shasum -a 512 "$ARCHIVE" | cut -d ' ' -f1)
+  [ "$ACTUAL" = "$SHA" ] || { printf '%s\n' 'Maven 下载校验失败' >&2; exit 1; }
+  unzip -q "$ARCHIVE" -d "$BASE/tools/distributions"
+fi
+exec "$HOME_MAVEN/bin/mvn" \
+  --global-settings "$BASE/.mvn/global-settings.xml" \
+  --settings "$BASE/.mvn/settings.xml" \
+  "-Dquest.maven.repo=$BASE/tools/repository" \
+  -f "$BASE/pom.xml" "$@"

@@ -1,0 +1,27 @@
+[project]
+name = "quest-ai-service"
+version = "0.1.0"
+description = "Internal, draft-only AI extraction service"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "starlette>=0.49,<1", # Keep the httpx TestClient contract (Starlette 1.x uses httpx2).
+    "httpx>=0.28,<1",
+    "pydantic-settings>=2.7,<3",
+    "uvicorn>=0.34,<1",
+    "langgraph>=1.2.20,<1.3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

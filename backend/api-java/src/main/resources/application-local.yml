@@ -1,0 +1,10 @@
+# No in-memory CRUD or fake persistence. Local health checks the process only.
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      - org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration
+      - com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration
+quest:
+  persistence:
+    mode: disabled

@@ -1,0 +1,11 @@
+@import 'katex/dist/katex.min.css';
+.quest-markdown { line-height: 1.8; overflow-wrap: anywhere; color: #263c50; }
+.quest-markdown > :first-child { margin-top: 0; }
+.quest-markdown > :last-child { margin-bottom: 0; }
+.quest-markdown table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+.quest-markdown th, .quest-markdown td { border: 1px solid #dde5ec; padding: 9px 12px; text-align: left; }
+.quest-markdown th { background: #f3f7fa; }
+.quest-markdown pre { overflow-x: auto; padding: 16px; border-radius: 8px; background: #eef3f7; }
+.quest-markdown img { max-width: 100%; height: auto; }
+.quest-markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding: 8px 0; }
+.quest-markdown a { color: #087d84; text-decoration: underline; }
