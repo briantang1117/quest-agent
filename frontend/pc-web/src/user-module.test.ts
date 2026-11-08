@@ -10,6 +10,10 @@ import LoginView from './views/LoginView.vue'
 import ChangePasswordView from './views/ChangePasswordView.vue'
 import AdminUsersView from './views/AdminUsersView.vue'
 import App from './App.vue'
+import { initializeErrorFeedback } from './error-feedback'
+import { readFile } from 'node:fs/promises'
+let cleanupFeedback: (() => void) | undefined
+import { resolve } from 'node:path'
 const student: UserProfile = {
   id: '9007199254740993',
   username: 'student_a',
@@ -51,6 +55,7 @@ async function fill(wrapper: VueWrapper, id: string, value: string) {
   await wrapper.get(`input#${id}`).setValue(value)
 }
 beforeEach(() => {
+  cleanupFeedback = initializeErrorFeedback()
   profile = { ...student }
   requests = []
   failureCode = 0
@@ -95,6 +100,7 @@ beforeEach(() => {
   }
 })
 afterEach(() => {
+  cleanupFeedback?.()
   for (const wrapper of wrappers) wrapper.unmount()
   wrappers = []
   useAuthStore().clearSession()
@@ -150,6 +156,7 @@ describe('PC真实认证页面', () => {
       expect(document.querySelector('.arco-message-content')?.textContent).toBe(message),
     )
     expect(wrapper.find('.auth-panel [role="alert"]').exists()).toBe(false)
+    expect(document.querySelectorAll('.arco-message')).toHaveLength(1)
     expect(document.querySelector('.arco-message')?.textContent).not.toContain('trace-page')
     expect(wrapper.text()).not.toContain('trace-page')
     expect(wrapper.text()).not.toContain('请求被拒绝')
@@ -167,6 +174,23 @@ describe('PC真实认证页面', () => {
     expect(wrapper.find('.login-header .brand-mark').exists()).toBe(false)
     expect(wrapper.find('.login-header .brand-sub').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('改密会撤销旧会话')
+  })
+  it.each([
+    [40100, '当前密码不正确或登录已失效，请重新确认'],
+    [40000, '请检查新密码要求，新密码不能与当前密码相同'],
+    [50300, '修改密码失败，请稍后重试'],
+  ])('改密失败%s保留友好中文且只提示一次', async (code, message) => {
+    const { wrapper } = await render(ChangePasswordView, '/change-password', true)
+    failureCode = code as number
+    await fill(wrapper, 'current-password', 'password1234')
+    await fill(wrapper, 'new-password', 'newpassword123')
+    await fill(wrapper, 'confirm-password', 'newpassword123')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(document.querySelectorAll('.arco-message')).toHaveLength(1)
+    expect(document.querySelector('.arco-message-content')?.textContent).toBe(message)
+    expect(document.body.textContent).not.toContain('trace-page')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
   })
   it('改密验证UTF8和重复密码，成功后按身份分流', async () => {
     const { wrapper, router } = await render(ChangePasswordView, '/change-password', true)
@@ -193,6 +217,51 @@ describe('PC真实认证页面', () => {
   })
 })
 describe('用户管理页面', () => {
+  it('后台表格容器裁剪超出圆角的内容', async () => {
+    setActivePinia(createPinia())
+    const style = document.createElement('style')
+    style.textContent = await readFile(resolve('src/layouts/admin-layout.css'), 'utf8')
+    const card = document.createElement('div')
+    card.className = 'admin-users-card'
+    const container = document.createElement('div')
+    container.className = 'arco-table-container'
+    card.append(container)
+    document.head.append(style)
+    document.body.append(card)
+    try {
+      expect(getComputedStyle(container).overflow).toBe('hidden')
+    } finally {
+      card.remove()
+      style.remove()
+    }
+  })
+  it('筛选区域在Arco表单内部用独立div布局，不继承表单纵向排列', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    const { wrapper } = await render(AdminUsersView, '/admin/users', true)
+    const area = wrapper.get<HTMLElement>('form[data-test="filter"] > .user-filter-area')
+    expect(area.element.tagName).toBe('DIV')
+    expect(area.find('.user-filter-form').exists()).toBe(true)
+    expect(area.find('.user-filter-actions').exists()).toBe(true)
+    expect(area.classes()).not.toContain('arco-form')
+  })
+  it('筛选由单个Arco表单承载并通过提交查询', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    const { wrapper } = await render(AdminUsersView, '/admin/users', true)
+    const form = wrapper.get('form[data-test="filter"]')
+    expect(form.classes()).toContain('arco-form')
+    expect(wrapper.findAll('form')).toHaveLength(1)
+    expect(form.find('button[type="submit"]').exists()).toBe(true)
+    await fill(wrapper, 'user-keyword', 'student')
+    await form.trigger('submit')
+    await flushPromises()
+    expect(requests.at(-1)?.params).toMatchObject({ keyword: 'student', page: 1 })
+  })
+  it('表格横向宽度跟随容器，不写死为1000px', async () => {
+    profile = { ...student, role: 'admin', mustChangePassword: false }
+    const { wrapper } = await render(AdminUsersView, '/admin/users', true)
+    const table = wrapper.get<HTMLTableElement>('.arco-table-element')
+    expect(table.element.style.width).toBe('100%')
+  })
   it('加载真实列表与分页筛选，创建、启停、重置均调用契约', async () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
     const { wrapper } = await render(AdminUsersView, '/admin/users', true)
@@ -260,7 +329,9 @@ describe('用户管理页面', () => {
     await flushPromises()
     expect(requests.length).toBe(before + 1)
     expect(wrapper.find('[data-test="user-form"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('trace-page')
+    expect(wrapper.text()).not.toContain('trace-page')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(document.querySelectorAll('.arco-message')).toHaveLength(1)
   })
   it('分页、状态筛选和页大小来自接口，不触发轮询', async () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
@@ -276,7 +347,7 @@ describe('用户管理页面', () => {
     await flushPromises()
     expect(requests.at(-1)?.params.status).toBe('disabled')
   })
-  it('创建进行中防重复提交；失败保留traceId和弹窗', async () => {
+  it('创建进行中防重复提交；失败仅全局一次且保留弹窗、不展示traceId', async () => {
     profile = { ...student, role: 'admin', mustChangePassword: false }
     const { wrapper } = await render(AdminUsersView, '/admin/users', true)
     await wrapper.get('[data-test="create-user"]').trigger('click')
@@ -306,7 +377,12 @@ describe('用户管理页面', () => {
       data: { code: 40900, message: '用户名已存在', data: null, traceId: 'conflict-trace' },
     })
     await flushPromises()
-    expect(wrapper.text()).toContain('conflict-trace')
+    expect(wrapper.text()).not.toContain('conflict-trace')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(document.querySelectorAll('.arco-message')).toHaveLength(1)
+    expect(document.querySelector('.arco-message-content')?.textContent).toBe(
+      '用户名已存在，请更换后重试',
+    )
     expect(wrapper.find('[data-test="user-form"]').exists()).toBe(true)
   })
   it('列表失败不伪造0或成功空表，可手动刷新', async () => {
@@ -315,7 +391,9 @@ describe('用户管理页面', () => {
     failureCode = 50300
     await wrapper.get('[data-test="refresh-users"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('trace-page')
+    expect(wrapper.text()).not.toContain('trace-page')
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(document.querySelectorAll('.arco-message')).toHaveLength(1)
     expect(wrapper.text()).not.toContain('共 0')
   })
 })

@@ -5,7 +5,7 @@ import { IconSearch, IconRefresh, IconPlus } from '@arco-design/web-vue/es/icon'
 const userForm = ref<FormInstance>()
 import {
   createUserApi,
-  errorMessage,
+  notifyError,
   PASSWORD_HINT,
   useAuthStore,
   type UserPage,
@@ -19,9 +19,8 @@ const filters = reactive({ keyword: '', status: '' as UserStatus | '' })
 const query = reactive({ page: 1, size: 20, keyword: '', status: '' as UserStatus | '' })
 const data = ref<UserPage | null>(null)
 const loading = ref(false)
-const error = ref('')
+const loadFailed = ref(false)
 const success = ref('')
-const modalError = ref('')
 const saving = ref(false)
 const mode = ref<'create' | 'status' | 'reset' | null>(null)
 const selected = ref<UserProfile | null>(null)
@@ -54,13 +53,16 @@ function formatDate(value: string | null) {
 async function load() {
   const version = ++listRevision
   loading.value = true
-  error.value = ''
+  loadFailed.value = false
   data.value = null
   try {
     const result = await api.list({ ...query })
     if (alive && version === listRevision) data.value = result
   } catch (cause) {
-    if (alive && version === listRevision) error.value = errorMessage(cause)
+    if (alive && version === listRevision) {
+      loadFailed.value = true
+      notifyError(cause)
+    }
   } finally {
     if (alive && version === listRevision) loading.value = false
   }
@@ -96,7 +98,6 @@ function open(next: 'create' | 'status' | 'reset', user?: UserProfile) {
   if (saving.value) return
   selected.value = user ?? null
   mode.value = next
-  modalError.value = ''
   success.value = ''
   form.username = ''
   form.displayName = ''
@@ -111,12 +112,10 @@ function close() {
   form.displayName = ''
   form.initialPassword = ''
   form.newPassword = ''
-  modalError.value = ''
 }
 async function save() {
   if (saving.value || !mode.value) return
   saving.value = true
-  modalError.value = ''
   try {
     if (mode.value === 'create') {
       await api.create({
@@ -142,7 +141,7 @@ async function save() {
     // 写入成功与列表刷新结果分开提示，避免刷新失败诱导重复写入。
     await load()
   } catch (cause) {
-    if (alive) modalError.value = errorMessage(cause)
+    if (alive) notifyError(cause)
   } finally {
     saving.value = false
   }
@@ -158,44 +157,46 @@ onBeforeUnmount(() => {
 <template>
   <a-card class="admin-users-card" title="用户管理" :bordered="false">
     <a-alert v-if="success" type="success" role="status">{{ success }}</a-alert>
-    <form data-test="filter" class="user-filter-area" @submit.prevent="filter">
-      <a-form
-        :model="filters"
-        layout="horizontal"
-        auto-label-width
-        class="user-filter-form"
-        :disabled="loading || saving"
-        :tag="'div'"
-      >
-        <a-row :gutter="16">
-          <a-col :xs="24" :md="12" :xl="8">
-            <a-form-item label="用户名称"
-              ><a-input
-                v-model="filters.keyword"
-                :input-attrs="{ id: 'user-keyword' }"
-                placeholder="请输入用户名或展示名"
-                allow-clear
-            /></a-form-item>
-          </a-col>
-          <a-col :xs="24" :md="12" :xl="8">
-            <a-form-item label="账号状态"
-              ><a-select v-model="filters.status" input-id="user-status" aria-label="账号状态"
-                ><a-option value="">全部</a-option><a-option value="active">启用</a-option
-                ><a-option value="disabled">禁用</a-option></a-select
-              ></a-form-item
-            >
-          </a-col>
-        </a-row>
-      </a-form>
-      <div class="user-filter-actions">
-        <a-button html-type="submit" :disabled="loading || saving" type="primary"
-          ><template #icon><IconSearch /></template>查询</a-button
-        >
-        <a-button data-test="reset-filters" :disabled="loading || saving" @click="resetFilters"
-          ><template #icon><IconRefresh /></template>清空</a-button
-        >
+    <a-form
+      data-test="filter"
+      :model="filters"
+      layout="horizontal"
+      auto-label-width
+      :disabled="loading || saving"
+      @submit-success="filter"
+    >
+      <div class="user-filter-area">
+        <div class="user-filter-form">
+          <a-row :gutter="16">
+            <a-col :xs="24" :md="12" :xl="8">
+              <a-form-item label="用户名称"
+                ><a-input
+                  v-model="filters.keyword"
+                  :input-attrs="{ id: 'user-keyword' }"
+                  placeholder="请输入用户名或展示名"
+                  allow-clear
+              /></a-form-item>
+            </a-col>
+            <a-col :xs="24" :md="12" :xl="8">
+              <a-form-item label="账号状态"
+                ><a-select v-model="filters.status" input-id="user-status" aria-label="账号状态"
+                  ><a-option value="">全部</a-option><a-option value="active">启用</a-option
+                  ><a-option value="disabled">禁用</a-option></a-select
+                ></a-form-item
+              >
+            </a-col>
+          </a-row>
+        </div>
+        <div class="user-filter-actions">
+          <a-button html-type="submit" :disabled="loading || saving" type="primary"
+            ><template #icon><IconSearch /></template>查询</a-button
+          >
+          <a-button data-test="reset-filters" :disabled="loading || saving" @click="resetFilters"
+            ><template #icon><IconRefresh /></template>清空</a-button
+          >
+        </div>
       </div>
-    </form>
+    </a-form>
     <a-divider />
     <div class="user-toolbar">
       <a-button data-test="create-user" type="primary" :disabled="saving" @click="open('create')"
@@ -205,16 +206,13 @@ onBeforeUnmount(() => {
         ><template #icon><IconRefresh /></template>刷新</a-button
       >
     </div>
-    <a-alert v-if="error" type="error" role="alert"
-      >列表加载失败：{{ error }}。可点击刷新列表重试。</a-alert
-    >
     <a-table
-      v-if="!error"
+      v-if="!loadFailed"
       row-key="id"
       :data="data?.list ?? []"
       :loading="loading"
       :pagination="false"
-      :scroll="{ x: 1000 }"
+      :scroll="{ x: '100%' }"
     >
       <template #columns>
         <a-table-column title="账号" :width="230"
@@ -302,7 +300,6 @@ onBeforeUnmount(() => {
     <p v-if="selected" class="modal-account">
       {{ selected.displayName }}（{{ selected.username }}）
     </p>
-    <a-alert v-if="modalError" type="error" role="alert">{{ modalError }}</a-alert>
     <template v-if="mode === 'status'">
       <p>
         {{

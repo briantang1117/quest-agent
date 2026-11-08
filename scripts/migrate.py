@@ -12,8 +12,8 @@ from dev import ROOT, service_environment
 
 
 def migration_environment(root: Path, target: str = '3') -> dict[str, str]:
-    if target not in ('3', '4'):
-        raise ValueError('仅允许已定义的目标3或4；新增迁移需独立审查授权')
+    if target not in ('3', '4', '5', '6', '7'):
+        raise ValueError('仅允许已定义的目标3、4、5、6或7；新增迁移需独立审查授权')
     config = service_environment(root, 'api')
     config.update({
         'SPRING_FLYWAY_ENABLED': 'true',
@@ -21,13 +21,14 @@ def migration_environment(root: Path, target: str = '3') -> dict[str, str]:
         'SPRING_FLYWAY_CLEAN_DISABLED': 'true',
         'SERVER_ADDRESS': '127.0.0.1',
         'SERVER_PORT': '18081',
+        'QUEST_PUBLIC_IMPORT_ENABLED': 'false',
     })
     return config
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='显式迁移工具；先核对目标和授权，不用于日常启动')
-    parser.add_argument('--target', choices=('3', '4'), default='3')
+    parser.add_argument('--target', choices=('3', '4', '5', '6', '7'), default='3')
     arguments = parser.parse_args()
     config = migration_environment(ROOT, arguments.target)
     with socket.socket() as probe:

@@ -17,10 +17,10 @@ async function submit() {
   if (busy.value) return
   busy.value = true
   try {
-    await auth.changePassword({
-      currentPassword: form.currentPassword,
-      newPassword: form.newPassword,
-    })
+    await auth.changePassword(
+      { currentPassword: form.currentPassword, newPassword: form.newPassword },
+      { silent: true },
+    )
     form.currentPassword = ''
     form.newPassword = ''
     form.confirmPassword = ''

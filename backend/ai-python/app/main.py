@@ -5,13 +5,17 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 
+from app.agent.candidate_graph import build_candidate_graph
 from app.agent.extraction_graph import build_extraction_graph
+from app.api.pdf_import import router as pdf_import_router
+from app.api.public_import import router as public_import_router
 from app.api.routes import router
 from app.core.config import Settings
 from app.core.errors import ServiceError, error_response
 from app.core.security import NonceStore, authenticate
 from app.llm.base import LLMProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
+from app.providers.deepseek import DeepSeekSearchProvider
 
 
 def create_app(settings: Settings | None = None, *, provider: LLMProvider | None = None) -> FastAPI:
@@ -22,7 +26,17 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
         application.state.provider = provider
         if provider is None and config.llm_configured:
             application.state.provider = OpenAICompatibleProvider(config)
+        application.state.search_provider = None
         try:
+            if config.search_configured:
+                application.state.search_provider = DeepSeekSearchProvider(config)
+            application.state.candidate_graph = (
+                build_candidate_graph(
+                    application.state.provider, search=application.state.search_provider
+                )
+                if application.state.provider is not None
+                else None
+            )
             application.state.extraction_graph = (
                 build_extraction_graph(application.state.provider)
                 if application.state.provider is not None
@@ -31,6 +45,9 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
             yield
         finally:
             application.state.extraction_graph = None
+            application.state.candidate_graph = None
+            if application.state.search_provider is not None:
+                await application.state.search_provider.aclose()
             if application.state.provider is not None:
                 await application.state.provider.aclose()
 
@@ -82,6 +99,8 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
         return {"status": "alive"}
 
     application.include_router(router)
+    application.include_router(public_import_router)
+    application.include_router(pdf_import_router)
     return application
 
 

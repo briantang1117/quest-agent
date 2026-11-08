@@ -20,6 +20,8 @@ coverage/
 backend/tools/
 .tools/
 .superpowers/
+# 真实PDF样本/解析数据仅保存在本机，不进入版本控制
+local-data/
 # 本机文件
 .DS_Store
 .idea/

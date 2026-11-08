@@ -198,6 +198,9 @@
 .admin-users-card .arco-table {
   width: 100%;
 }
+.admin-users-card .arco-table-container {
+  overflow: hidden;
+}
 .admin-users-card .user-pagination {
   justify-content: flex-end;
   margin-top: 16px;

@@ -1,18 +1,59 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
   IconUserGroup,
+  IconBook,
   IconDown,
   IconLock,
   IconExport,
   IconMenuFold,
   IconMenuUnfold,
 } from '@arco-design/web-vue/es/icon'
-import { errorMessage, useAuthStore } from '@quest/shared'
+import { notifyError, useAuthStore } from '@quest/shared'
 import './admin-layout.css'
+import DepthRouterView from '../components/DepthRouterView.vue'
+import AdminBreadcrumb from '../components/AdminBreadcrumb.vue'
+import { useCacheScope } from '../use-cache-scope'
+const cacheScope = useCacheScope()
 const auth = useAuthStore()
 const router = useRouter()
+const route = useRoute()
+const contentSection = computed(
+  () => route.path.startsWith('/admin/banks') || route.path.startsWith('/admin/questions/'),
+)
+const breadcrumbs = computed(() => {
+  if (!contentSection.value)
+    return [{ label: '系统管理' }, { label: '用户管理' }, { label: '用户列表' }]
+  const items: { label: string; to?: string }[] = [
+    { label: '内容管理' },
+    { label: '题库管理' },
+    { label: '公共题库', to: '/admin/banks' },
+  ]
+  if (route.name === 'AdminBankDetailView') items.push({ label: '管理题库' })
+  else if (route.name === 'AdminQuestionView') {
+    const bankId = route.query.bankId
+    if (typeof bankId === 'string' && /^[0-9a-f-]{36}$/.test(bankId))
+      items.push({ label: '管理题库', to: `/admin/banks/${bankId}` })
+    items.push({ label: '题目审核' })
+  }
+  return items
+})
+const breadcrumbBackTo = computed(
+  () =>
+    breadcrumbs.value
+      .slice(0, -1)
+      .reverse()
+      .find((item) => item.to)?.to ?? '/admin/banks',
+)
+const openKeys = ref<string[]>([])
+watch(
+  contentSection,
+  (isContent) => {
+    openKeys.value = [isContent ? 'question-banks' : 'accounts']
+  },
+  { immediate: true },
+)
 // 宽度与组件折叠状态只由这一处驱动，不能再用媒体查询单独压窄侧栏。
 const narrowScreen = ref(window.innerWidth <= 700)
 const desktopCollapsed = ref(false)
@@ -33,18 +74,16 @@ onMounted(() => {
 })
 onBeforeUnmount(() => window.removeEventListener('resize', syncViewport))
 const logoutBusy = ref(false)
-const logoutError = ref('')
 const avatarText = computed(() => Array.from(auth.user?.displayName?.trim() || '管理员')[0])
 async function logout() {
   if (logoutBusy.value) return
   logoutBusy.value = true
-  logoutError.value = ''
   const pending = auth.logout()
   await router.replace('/login')
   try {
     await pending
   } catch (cause) {
-    logoutError.value = errorMessage(cause)
+    notifyError(cause)
   } finally {
     logoutBusy.value = false
   }
@@ -57,8 +96,13 @@ async function logout() {
         ><span class="admin-brand-name">知序</span
         ><span class="admin-brand-label">管理后台</span></RouterLink
       >
-      <a-menu mode="horizontal" :selected-keys="['system']" aria-label="一级导航">
-        <a-menu-item key="system">系统管理</a-menu-item>
+      <a-menu
+        mode="horizontal"
+        :selected-keys="[contentSection ? 'content' : 'system']"
+        aria-label="一级导航"
+      >
+        <a-menu-item key="system" @click="router.push('/admin/users')">系统管理</a-menu-item>
+        <a-menu-item key="content" @click="router.push('/admin/banks')">内容管理</a-menu-item>
       </a-menu>
       <div class="admin-account">
         <a-dropdown trigger="click" position="br">
@@ -89,13 +133,19 @@ async function logout() {
     </header>
     <aside class="admin-sidebar" aria-label="系统管理菜单">
       <a-menu
+        v-model:open-keys="openKeys"
         :collapsed="collapsed"
-        :selected-keys="['users']"
-        :default-open-keys="['accounts']"
+        :selected-keys="[contentSection ? 'banks' : 'users']"
         :auto-open-selected="true"
         :level-indent="34"
       >
-        <a-sub-menu key="accounts"
+        <a-sub-menu v-if="contentSection" key="question-banks"
+          ><template #icon><IconBook /></template><template #title>题库管理</template
+          ><a-menu-item key="banks" @click="router.push('/admin/banks')"
+            >公共题库</a-menu-item
+          ></a-sub-menu
+        >
+        <a-sub-menu v-else key="accounts"
           ><template #icon><IconUserGroup /></template><template #title>用户管理</template>
           <a-menu-item key="users" @click="router.push('/admin/users')">用户列表</a-menu-item>
         </a-sub-menu>
@@ -113,13 +163,8 @@ async function logout() {
     </aside>
     <div class="admin-content-shell">
       <main id="main" class="admin-content">
-        <a-alert v-if="logoutError" type="warning">{{ logoutError }}</a-alert>
-        <a-breadcrumb class="admin-breadcrumb"
-          ><a-breadcrumb-item>系统管理</a-breadcrumb-item
-          ><a-breadcrumb-item>用户管理</a-breadcrumb-item
-          ><a-breadcrumb-item>用户列表</a-breadcrumb-item></a-breadcrumb
-        >
-        <RouterView />
+        <AdminBreadcrumb :items="breadcrumbs" :back-to="breadcrumbBackTo" />
+        <DepthRouterView :key="cacheScope" />
       </main>
       <footer class="admin-footer">
         <span><span class="brand-wordmark">知序</span> · 让学习有迹可循</span>

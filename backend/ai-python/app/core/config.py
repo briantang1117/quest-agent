@@ -11,18 +11,68 @@ class Settings(BaseSettings):
     app_env: Literal["local", "production"] = "local"
     internal_service_token: SecretStr | None = None
     internal_hmac_secret: SecretStr | None = None
+    text_llm_base_url: str | None = Field(default=None, exclude=True, repr=False)
+    text_llm_api_key: SecretStr | None = Field(default=None, exclude=True, repr=False)
+    text_llm_model: str | None = Field(default=None, exclude=True, repr=False)
     llm_base_url: str | None = None
     llm_api_key: SecretStr | None = None
     llm_model: str | None = None
+    # 方舟调试能力各自配置；地址和模型别名原样使用，不借用文本模型密钥。
+    ocr_api_base_url: str | None = None
+    ocr_api_key: SecretStr | None = None
+    ocr_model: str | None = None
+    embedding_base_url: str | None = None
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str | None = None
+    search_api_base_url: str | None = None
+    search_api_key: SecretStr | None = None
+    fetch_api_base_url: str | None = None
+    fetch_api_key: SecretStr | None = None
+    # 必须根据接口实际输出核实，不能从模型名猜测或默认沿用数据库1024维。
+    embedding_dimensions: int | None = Field(default=None, gt=0, strict=True)
     llm_timeout_seconds: float = Field(default=30, gt=0, le=300)
     llm_temperature: float = Field(default=0, ge=0, le=2)
     llm_max_tokens: int = Field(default=4096, ge=1, le=32768)
 
-    @field_validator("llm_base_url", "llm_api_key", "llm_model", mode="before")
+    @model_validator(mode="before")
+    @classmethod
+    def select_text_provider_group(cls, values):
+        # 任一TEXT配置出现即整组选用，绝不从旧组或其他能力借用密钥。
+        if isinstance(values, dict) and any(
+            key in values for key in ("text_llm_base_url", "text_llm_api_key", "text_llm_model")
+        ):
+            values = dict(values)
+            for suffix in ("base_url", "api_key", "model"):
+                values[f"llm_{suffix}"] = values.get(f"text_llm_{suffix}")
+        return values
+
+    @field_validator(
+        "llm_base_url",
+        "llm_api_key",
+        "llm_model",
+        "ocr_api_base_url",
+        "ocr_api_key",
+        "ocr_model",
+        "embedding_base_url",
+        "embedding_api_key",
+        "embedding_model",
+        "search_api_base_url",
+        "search_api_key",
+        "fetch_api_base_url",
+        "fetch_api_key",
+        mode="before",
+    )
     @classmethod
     def empty_optional_llm_is_unconfigured(cls, value):
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("embedding_dimensions", mode="before")
+    @classmethod
+    def decimal_dimensions(cls, value):
+        if isinstance(value, str) and value.isascii() and value.isdecimal():
+            return int(value)
         return value
 
     @field_validator("internal_service_token", "internal_hmac_secret", "llm_api_key")
@@ -32,7 +82,13 @@ class Settings(BaseSettings):
             raise ValueError("configured secrets must not be blank")
         return value
 
-    @field_validator("llm_base_url")
+    @field_validator(
+        "llm_base_url",
+        "ocr_api_base_url",
+        "embedding_base_url",
+        "search_api_base_url",
+        "fetch_api_base_url",
+    )
     @classmethod
     def validate_base_url(cls, value: str | None) -> str | None:
         if value is None:
@@ -47,7 +103,7 @@ class Settings(BaseSettings):
             or parts.fragment
         ):
             raise ValueError(
-                "LLM_BASE_URL must be an HTTP(S) base URL without credentials or query"
+                "Provider base URL must be HTTP(S) without credentials, query or fragment"
             )
         return value.rstrip("/")
 
@@ -71,6 +127,22 @@ class Settings(BaseSettings):
     @property
     def internal_security_configured(self) -> bool:
         return self.internal_service_token is not None and self.internal_hmac_secret is not None
+
+    @property
+    def ocr_configured(self) -> bool:
+        return bool(self.ocr_api_base_url and self.ocr_api_key and self.ocr_model)
+
+    @property
+    def embedding_configured(self) -> bool:
+        return bool(self.embedding_base_url and self.embedding_api_key and self.embedding_model)
+
+    @property
+    def search_configured(self) -> bool:
+        return bool(self.search_api_base_url and self.search_api_key)
+
+    @property
+    def fetch_configured(self) -> bool:
+        return bool(self.fetch_api_base_url and self.fetch_api_key)
 
     @property
     def llm_configured(self) -> bool:

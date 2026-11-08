@@ -13,7 +13,11 @@ function allowed(user: UserProfile, path: string) {
     path === '/change-password' ||
     path === '/dev/connection' ||
     (user.role === 'admin'
-      ? path === '/admin/users'
+      ? path === '/admin/users' ||
+        path === '/admin/banks' ||
+        /^\/admin\/(?:questions|banks)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          path,
+        )
       : ['/practice', '/practice/agent'].includes(path))
   )
 }

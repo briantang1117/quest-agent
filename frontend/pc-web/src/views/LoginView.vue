@@ -18,7 +18,7 @@ async function submit() {
   busy.value = true
   feedback?.close()
   try {
-    await auth.login({ ...form })
+    await auth.login({ ...form }, { silent: true })
     form.password = ''
     if (auth.user) await router.replace(safeNext(auth.user, route.query.next))
   } catch (cause) {

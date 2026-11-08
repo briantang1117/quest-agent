@@ -2,10 +2,17 @@ import { createRouter, createWebHistory, type RouterHistory } from 'vue-router'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
 import { authRedirect, useAuthStore } from '@quest/shared'
+import { setupRouteListener } from './utils/route-listener'
 
 export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
   const router = createRouter({
     history,
+    scrollBehavior(_to, _from, savedPosition) {
+      if (savedPosition) {
+        return savedPosition
+      }
+      return { top: 0 }
+    },
     routes: [
       { path: '/', component: () => import('./views/NotFound.vue') },
       {
@@ -14,13 +21,15 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
         children: [
           {
             path: '',
+            name: 'PracticeView',
             component: () => import('./views/PracticeView.vue'),
-            meta: { title: '学习工作区' },
+            meta: { title: '学习工作区', pageDeepth: 1 },
           },
           {
             path: 'agent',
+            name: 'AgentView',
             component: () => import('./views/AgentView.vue'),
-            meta: { title: '个人 Agent' },
+            meta: { title: '个人 Agent', pageDeepth: 1 },
           },
         ],
       },
@@ -30,9 +39,28 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
         children: [
           { path: '', redirect: '/admin/users' },
           {
+            path: 'banks',
+            name: 'AdminBanksView',
+            component: () => import('./views/AdminBanksView.vue'),
+            meta: { title: '公共题库', pageDeepth: 1 },
+          },
+          {
+            path: 'banks/:id',
+            name: 'AdminBankDetailView',
+            component: () => import('./views/AdminBankDetailView.vue'),
+            meta: { title: '管理题库', pageDeepth: 2 },
+          },
+          {
+            path: 'questions/:id',
+            name: 'AdminQuestionView',
+            component: () => import('./views/AdminQuestionView.vue'),
+            meta: { title: '题目审核', pageDeepth: 3 },
+          },
+          {
             path: 'users',
+            name: 'AdminUsersView',
             component: () => import('./views/AdminUsersView.vue'),
-            meta: { title: '用户管理' },
+            meta: { title: '用户管理', pageDeepth: 1 },
           },
         ],
       },
@@ -54,6 +82,7 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
       },
     ],
   })
+  setupRouteListener(router)
   router.beforeEach(async (to) => {
     const auth = useAuthStore(pinia)
     await auth.restoreSession()

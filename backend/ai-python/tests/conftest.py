@@ -19,6 +19,20 @@ def isolated_environment(monkeypatch):
         "LLM_BASE_URL",
         "LLM_API_KEY",
         "LLM_MODEL",
+        "TEXT_LLM_BASE_URL",
+        "TEXT_LLM_API_KEY",
+        "TEXT_LLM_MODEL",
+        "OCR_API_BASE_URL",
+        "OCR_API_KEY",
+        "OCR_MODEL",
+        "EMBEDDING_BASE_URL",
+        "EMBEDDING_API_KEY",
+        "EMBEDDING_MODEL",
+        "EMBEDDING_DIMENSIONS",
+        "SEARCH_API_BASE_URL",
+        "SEARCH_API_KEY",
+        "FETCH_API_BASE_URL",
+        "FETCH_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
 

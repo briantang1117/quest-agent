@@ -37,7 +37,21 @@ final class SessionSecurityFilter extends OncePerRequestFilter {
                 boolean userManagement = (path.equals("/api/v1/admin/users") && (request.getMethod().equals("GET") || request.getMethod().equals("POST")))
                     || (path.matches("/api/v1/admin/users/[^/]+/status") && request.getMethod().equals("PATCH"))
                     || (path.matches("/api/v1/admin/users/[^/]+/reset-password") && request.getMethod().equals("POST"));
-                if (identity.user().role().equals("admin") && !selfService && !userManagement && !path.equals("/api/v1/system/info")
+                // 公共内容使用独立白名单，不扩大到历史题表/私人内容/练习端点。
+                boolean publicManagement = (path.equals("/api/v1/admin/public-banks") && (request.getMethod().equals("GET") || request.getMethod().equals("POST")))
+                    || (path.matches("/api/v1/admin/public-banks/[^/]+") && request.getMethod().equals("GET"))
+                    || (path.matches("/api/v1/admin/public-banks/[^/]+/imports") && (request.getMethod().equals("GET") || request.getMethod().equals("POST")))
+                    || (path.matches("/api/v1/admin/public-questions/[^/]+") && request.getMethod().equals("DELETE"))
+                    || (path.matches("/api/v1/admin/public-questions/[^/]+/withdraw") && request.getMethod().equals("POST"))
+                    || (path.matches("/api/v1/admin/public-banks/[^/]+/publish") && request.getMethod().equals("POST"))
+                    || (path.matches("/api/v1/admin/public-banks/[^/]+/pdf-imports") && request.getMethod().equals("POST"))
+                    || (path.matches("/api/v1/admin/public-banks/[^/]+/(documents|questions|question-summary)") && request.getMethod().equals("GET"))
+                    || (path.matches("/api/v1/admin/public-documents/[^/]+/start") && request.getMethod().equals("POST"))
+                    || (path.matches("/api/v1/admin/public-documents/[^/]+/file") && request.getMethod().equals("GET"))
+                    || (path.matches("/api/v1/admin/public-imports/[^/]+") && request.getMethod().equals("GET"))
+                    || (path.matches("/api/v1/admin/public-questions/[^/]+") && (request.getMethod().equals("GET") || request.getMethod().equals("PUT")))
+                    || (path.matches("/api/v1/admin/public-questions/[^/]+/(confirm|publish)") && request.getMethod().equals("POST"));
+                if (identity.user().role().equals("admin") && !selfService && !userManagement && !publicManagement && !path.equals("/api/v1/system/info")
                         && !path.equals("/actuator/health") && !path.startsWith("/actuator/health/")) throw UserFailure.denied();
             } catch (UserFailure failure) {
                 SecurityContextHolder.clearContext();

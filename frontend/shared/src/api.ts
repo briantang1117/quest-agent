@@ -1,5 +1,10 @@
 import axios, { type AxiosRequestConfig } from 'axios'
 import type { ApiResponse } from './types'
+import { notifyError } from './feedback'
+
+export interface ApiRequestConfig extends AxiosRequestConfig {
+  silent?: boolean
+}
 
 export class ApiError extends Error {
   readonly name = 'ApiError'
@@ -32,7 +37,7 @@ export function createApiClient(options: { baseURL: string; getToken?: () => str
     if (token) config.headers.set('Authorization', `Bearer ${token}`)
     return config
   })
-  async function request<T>(config: AxiosRequestConfig): Promise<T> {
+  async function request<T>(config: ApiRequestConfig): Promise<T> {
     try {
       const response = await transport.request<unknown>(config)
       if (!isEnvelope(response.data))
@@ -42,10 +47,12 @@ export function createApiClient(options: { baseURL: string; getToken?: () => str
         throw new ApiError(envelope.message, envelope.code, envelope.traceId, response.status)
       return envelope.data as T
     } catch (error) {
-      if (error instanceof ApiError) throw error
-      if (axios.isAxiosError(error) && error.response) {
+      if (axios.isCancel(error)) throw error
+      let failure: ApiError
+      if (error instanceof ApiError) failure = error
+      else if (axios.isAxiosError(error) && error.response) {
         const data = error.response.data as Partial<ApiResponse<unknown>> | undefined
-        throw new ApiError(
+        failure = new ApiError(
           typeof data?.message === 'string'
             ? data.message
             : `服务请求失败（HTTP ${error.response.status}）`,
@@ -53,16 +60,17 @@ export function createApiClient(options: { baseURL: string; getToken?: () => str
           typeof data?.traceId === 'string' ? data.traceId : undefined,
           error.response.status,
         )
-      }
-      throw new ApiError('网络连接失败，请检查服务地址、代理及网络')
+      } else failure = new ApiError('网络连接失败，请检查服务地址、代理及网络')
+      if (!config.silent) notifyError(failure)
+      throw failure
     }
   }
   return {
     defaults: transport.defaults,
     request,
-    get: <T>(url: string, config?: AxiosRequestConfig) =>
+    get: <T>(url: string, config?: ApiRequestConfig) =>
       request<T>({ ...config, method: 'GET', url }),
-    post: <T>(url: string, data: unknown, config?: AxiosRequestConfig) =>
+    post: <T>(url: string, data: unknown, config?: ApiRequestConfig) =>
       request<T>({ ...config, method: 'POST', url, data }),
   }
 }

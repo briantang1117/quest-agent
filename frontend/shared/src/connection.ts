@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { ApiError, createApiClient } from './api'
+import { createApiClient } from './api'
+import { notifyError } from './feedback'
 
 export const useConnectionStore = defineStore('connection', () => {
   const baseURL = ref('')
@@ -65,13 +66,19 @@ export const useConnectionStore = defineStore('connection', () => {
       )
       const data: unknown = await response.json()
       const status = data && typeof data === 'object' && 'status' in data ? String(data.status) : ''
-      if (version === revision)
+      if (version === revision) {
         health.value =
           status === 'UP' && response.ok
             ? '服务可用（UP）'
             : `服务未就绪（${status || '未知状态'}，HTTP ${response.status}）`
-    } catch {
-      if (version === revision) health.value = '无法连接，请检查 Java 服务、代理与网络'
+        if (!response.ok || status !== 'UP')
+          notifyError(new Error('Health check failed'), '服务暂未就绪，请稍后重试')
+      }
+    } catch (error) {
+      if (version === revision) {
+        health.value = '未能完成检查'
+        notifyError(error, '无法连接，请检查 Java 服务、代理与网络')
+      }
     } finally {
       healthBusy.value = false
     }
@@ -98,11 +105,10 @@ export const useConnectionStore = defineStore('connection', () => {
         systemStatus.value = '凭据有效，系统信息已获取（不代表已验证角色）'
       }
     } catch (error) {
-      if (version === revision)
-        systemStatus.value =
-          error instanceof ApiError
-            ? `${error.message}${error.traceId ? `（traceId: ${error.traceId}）` : ''}`
-            : '系统信息获取失败'
+      if (version === revision) {
+        systemStatus.value = '凭据未验证'
+        notifyError(error)
+      }
     } finally {
       systemBusy.value = false
     }

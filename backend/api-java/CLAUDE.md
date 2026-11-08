@@ -50,7 +50,7 @@ SPRING_FLYWAY_ENABLED=false bash ../scripts/start-api.sh
 - 原生 Application：主类 `com.quest.api.ApiApplication`，classpath选API模块，JDK27，**工作目录为backend，即 `$PROJECT_DIR$/..`**，程序实参 `--spring.profiles.active=deployment --spring.flyway.enabled=false`。
 - `application.yml` 从工作目录导入 `optional:file:./.env.api.properties`，不是从Java源码目录或仓库根加载。已有真实properties，不复制模板覆盖，不回显文件内容。
 - 默认 local profile 排除数据库、Flyway、MyBatis自动配置，持久化 disabled，不提供假内存CRUD。deployment启用PostgreSQL/Hikari，readiness含数据库。不要将local健康UP解释为数据库已连通。
-- 应用本机运行、中间件在NAS；不擅自部署应用到NAS。运行账号为quest_app，迁移使用独立账号。已有Flyway V1–V3，不重新初始化数据库；新增迁移、共享数据库写入和远程资源修改需要明确授权。
+- 应用本机运行、中间件在NAS；不擅自部署应用到NAS。运行账号为quest_app，迁移使用独立账号。Flyway V1–V7已在明确授权后执行核验，不重新初始化数据库；V7软删除两字段/约束/索引齐全，旧13题及10已确认/3已发布状态不变，权限隔离和重复迁移已验证，后续不得修改V1–V7。新增迁移执行、共享数据库写入和远程资源修改需要明确授权。
 - 迁移SQL随API打包在 `src/main/resources/db/migration`，另有 `../../deploy/migrations` 兼容副本，改动需要同步核对。deployment的Flyway开启默认值可能为true，日常运行保留显式关闭参数。
 - 启动后检查 `/actuator/health/readiness` 返回200/UP；匿名 `/api/v1/system/info` 返回401正常。临时冒烟使用备用端口、禁用迁移，并只停止自己启动的进程。
 
@@ -60,10 +60,10 @@ API启动入口为 `ApiApplication`。当前重点是安全、响应协议与工
 
 请求先经过高优先级 `TraceFilter`，校验/生成 `X-Trace-Id`，写入请求属性、响应头及MDC，并在请求结束恢复MDC。业务响应使用common的 `ApiResponse<T>`：`{code,message,data,traceId}`；Actuator保留原生健康协议。`ApiExceptionHandler`统一处理MVC异常，不向客户端暴露内部异常；Spring Security在过滤器链内单独写相同响应格式，修改错误协议时要同时考虑两条路径。
 
-`SecurityConfiguration`是无状态JWT Resource Server：仅GET健康端点公开，业务接口默认认证，内部路径显式denyAll，启用方法级权限。HS256 secret至少32个UTF-8字节，验证issuer、audience、sub、exp。deployment缺密钥启动失败；local无密钥时业务仍锁定；禁止local与deployment/production混用。当前不提供默认管理员、登录/发Token、完整RBAC或已完成的内部HMAC链路，不绕过安全配置来“跑通”接口。
+`SecurityConfiguration`是无状态JWT Resource Server：仅GET健康端点公开，业务接口默认认证，内部路径显式denyAll，启用方法级权限。HS256 secret至少32个UTF-8字节，验证issuer、audience、sub、exp。deployment缺密钥启动失败；local无密钥时业务仍锁定；禁止local与deployment/production混用。不提供默认管理员。登录发Token与数据库会话已实现；公共题库单题文本有Java→Python内部HMAC客户端，尚未真实环境联调。完整RBAC和文件链路仍未实现，不绕过安全配置来“跑通”接口。
 
 API的 `common` 包是HTTP适配层的异常与trace处理，不等同于兄弟Maven模块 `../common`。后者提供可复用的 `ApiResponse`、不可变题目契约及选择题判分，不是可启动的Spring Boot应用；不要在整个reactor上直接执行 `spring-boot:run`。
 
 测试主要分为：common领域测试、API的MockMvc契约测试 `ApiContractTest`、安全配置测试 `SecurityConfigurationTest`。API契约覆盖鉴权、统一响应、trace传播、异常隐藏；安全失败场景测试可能主动打印ERROR日志，以Surefire断言与构建退出码判断，不凭日志级别认定构建失败。
 
-尚未完成真实登录/注册、题库CRUD、练习/模考及可靠MQ/S3/AI业务链路。后续顺序和约束参考交接文档，不提供伪造题库、统计或AI回答。
+登录、改密和Admin用户管理已实现（不开放注册），首Admin由用户自行初始化，V4已授权执行。新增公共库首段在`publicbank`包：公共库/单题文本任务/草稿编辑/导入人确认/发布，独立V5迁移已获用户明确授权执行NAS并核验。任务处理`quest.public-import.enabled`默认false，不能擅自开启导致外发队列材料；AI经内部HMAC访问Python，失败不自动付费重试。Admin仅加公共域显式路由白名单，不放开学习/历史题表/私人内容。详见[公共题库联调与验收](../../docs/公共题库联调与验收.md)。尚未完成PDF/图片上传、普通用户发布题读取、练习/模考及可靠MQ/S3业务链路，不提供伪造题库、统计或AI回答。

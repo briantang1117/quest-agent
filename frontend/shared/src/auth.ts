@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, onScopeDispose, ref } from 'vue'
-import type { AxiosRequestConfig } from 'axios'
-import { ApiError, createApiClient } from './api'
+import { ApiError, createApiClient, type ApiRequestConfig } from './api'
+import { errorMessage, notifyError } from './feedback'
 
 export type UserRole = 'admin' | 'student'
 export type UserStatus = 'active' | 'disabled'
@@ -29,11 +29,7 @@ export interface ChangePasswordInput {
   newPassword: string
 }
 
-export function errorMessage(error: unknown): string {
-  return error instanceof ApiError
-    ? `${error.message}${error.traceId ? `（traceId: ${error.traceId}）` : ''}`
-    : '请求失败，请稍后重试'
-}
+export { errorMessage } from './feedback'
 
 const SESSION_KEY = 'quest.auth.session'
 function readSession(): { accessToken: string; expiresAt: string; baseURL: string } | null {
@@ -170,37 +166,39 @@ export const useAuthStore = defineStore('auth', () => {
     })()
     return restorePending
   }
-  async function request<T>(config: AxiosRequestConfig): Promise<T> {
-    if (!configured.value) throw new ApiError(configError.value)
-    // 已主动退出/没有身份时拒绝请求，但不将后续组件请求误标为会话过期。
-    if (!authenticated.value) throw new ApiError('请先登录', 40100)
-    if (Date.parse(expiresAt.value) <= Date.now()) {
-      clearSession('登录已过期，请重新登录')
-      throw new ApiError('登录已失效，请重新登录', 40100)
-    }
+  async function request<T>(config: ApiRequestConfig): Promise<T> {
     const version = revision
-    const credential = token.value
-    const client = createApiClient({ baseURL: baseURL.value, getToken: () => credential })
     try {
+      if (!configured.value) throw new ApiError(configError.value)
+      // 已主动退出/没有身份时拒绝请求，但不将后续组件请求误标为会话过期。
+      if (!authenticated.value) throw new ApiError('请先登录', 40100)
+      if (Date.parse(expiresAt.value) <= Date.now()) {
+        clearSession('登录已过期，请重新登录')
+        throw new ApiError('登录已失效，请重新登录', 40100)
+      }
+      const credential = token.value
+      const client = createApiClient({ baseURL: baseURL.value, getToken: () => credential })
       const data = await client.request<T>(config)
       assertCurrent(version)
       return data
     } catch (error) {
-      if (version === revision && error instanceof ApiError) {
+      if (version === revision && authenticated.value && error instanceof ApiError) {
         if (error.status === 401 || error.code === 40100) clearSession(errorMessage(error))
         else if (error.code === 40310 && user.value)
           user.value = { ...user.value, mustChangePassword: true }
       }
+      if (!config.silent) notifyError(error)
       throw error
     }
   }
-  async function login(input: LoginInput) {
+  async function login(input: LoginInput, options: Pick<ApiRequestConfig, 'silent'> = {}) {
     clearSession()
     if (!configured.value) throw new ApiError(configError.value)
     const version = revision
     const data = await createApiClient({ baseURL: baseURL.value }).post<TokenResult>(
       '/api/v1/auth/login',
       input,
+      options,
     )
     accept(data, version)
   }
@@ -219,12 +217,16 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = data
     return data
   }
-  async function changePassword(input: ChangePasswordInput) {
+  async function changePassword(
+    input: ChangePasswordInput,
+    options: Pick<ApiRequestConfig, 'silent'> = {},
+  ) {
     const version = revision
     const data = await request<TokenResult>({
       method: 'POST',
       url: '/api/v1/auth/change-password',
       data: input,
+      ...options,
     })
     accept(data, version)
   }

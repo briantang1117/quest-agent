@@ -1,30 +1,30 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { errorMessage, homePath, useAuthStore } from '@quest/shared'
+import { notifyError, homePath, useAuthStore } from '@quest/shared'
 import { useConnectionStore } from '@quest/shared/connection'
 const auth = useAuthStore()
 const connection = useConnectionStore()
 const router = useRouter()
 const route = useRoute()
+// 首次导航完成前matched为空，不能把尚未恢复的身份当普通用户渲染。
+const routeReady = computed(() => route.matched.length > 0)
 const adminWorkspace = computed(
   () => auth.user?.role === 'admin' && route.path.startsWith('/admin'),
 )
 const loginPage = computed(() => ['/login', '/change-password'].includes(route.path))
 const logoutBusy = ref(false)
-const logoutError = ref('')
 const home = computed(() => (auth.user ? homePath(auth.user) : '/login'))
 async function logout() {
   if (logoutBusy.value) return
   logoutBusy.value = true
-  logoutError.value = ''
   connection.clearToken()
   const pending = auth.logout()
   await router.replace('/login')
   try {
     await pending
   } catch (cause) {
-    logoutError.value = `本地会话已清除；服务端登出未确认：${errorMessage(cause)}`
+    notifyError(cause)
   } finally {
     logoutBusy.value = false
   }
@@ -32,7 +32,8 @@ async function logout() {
 </script>
 <template>
   <a class="skip-link" href="#main">跳到主要内容</a>
-  <template v-if="adminWorkspace"><RouterView /></template>
+  <div v-if="!routeReady" class="app-loading" role="status" aria-live="polite">正在加载</div>
+  <template v-else-if="adminWorkspace"><RouterView /></template>
   <template v-else>
     <header class="topbar" :class="{ 'login-header': loginPage }">
       <RouterLink class="brand" :to="home"
@@ -59,7 +60,6 @@ async function logout() {
         ><a-button data-test="logout" :loading="logoutBusy" @click="logout">退出登录</a-button>
       </div>
     </header>
-    <a-alert v-if="logoutError" type="warning" role="alert">{{ logoutError }}</a-alert>
     <RouterView />
     <footer class="site-footer">
       <span><span class="brand-wordmark">知序</span> · 让学习有迹可循</span
@@ -69,3 +69,12 @@ async function logout() {
     </footer>
   </template>
 </template>
+<style scoped>
+.app-loading {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  color: var(--color-text-3);
+  font-size: 14px;
+}
+</style>

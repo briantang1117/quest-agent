@@ -42,6 +42,22 @@ describe('授权路由策略', () => {
       query: { next: '/practice' },
     })
   })
+  it('公共库及审核仅对Admin开放，仍拒绝任意后台路径和编码绕过', () => {
+    for (const path of [
+      '/admin/banks',
+      '/admin/banks/12345678-1234-1234-1234-123456789abc',
+      '/admin/questions/12345678-1234-1234-1234-123456789abc',
+    ]) {
+      expect(authRedirect(admin, path)).toBeNull()
+      expect(authRedirect(student, path)).toBe('/practice')
+    }
+    for (const path of [
+      '/admin/questions/../users',
+      '/admin/questions/%2fsecret',
+      '/admin/private-banks',
+    ])
+      expect(authRedirect(admin, path)).toBe('/admin/users')
+  })
   it('next只允许显式授权站内路由，拒绝开放重定向与编码绕过', () => {
     for (const path of [
       'https://evil.test',
