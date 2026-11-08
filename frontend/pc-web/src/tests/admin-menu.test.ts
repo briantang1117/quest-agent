@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import ArcoVue from '@arco-design/web-vue'
 import { useAuthStore } from '@quest/shared'
-import AdminLayout from './layouts/AdminLayout.vue'
+import AdminLayout from '../layouts/AdminLayout.vue'
 
 let wrapper: VueWrapper | undefined
 afterEach(() => {

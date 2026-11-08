@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { listenerRouteChange, setupRouteListener } from './utils/route-listener'
+import { listenerRouteChange, setupRouteListener } from '../utils/route-listener'
 
 async function fixture() {
   const router = createRouter({

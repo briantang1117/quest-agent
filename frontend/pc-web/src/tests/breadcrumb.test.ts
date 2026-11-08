@@ -2,7 +2,7 @@ import { afterEach, expect, it } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import ArcoVue from '@arco-design/web-vue'
-import AdminBreadcrumb from './components/AdminBreadcrumb.vue'
+import AdminBreadcrumb from '../components/AdminBreadcrumb.vue'
 
 let wrapper: VueWrapper | undefined
 afterEach(() => wrapper?.unmount())

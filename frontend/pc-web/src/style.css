@@ -61,21 +61,23 @@ p {
 .skip-link:focus {
   top: 8px;
 }
+/* 学员顶栏比后台58px略高：品牌为“知序+副标题”两行，64px保证两行不挤。 */
 .topbar {
-  height: 82px;
+  height: 64px;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 48px;
-  padding: 0 40px;
+  gap: 28px;
+  padding: 0 24px;
   background: #fff;
   border-bottom: 1px solid #e1e8ef;
 }
 .brand {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
   color: #17374d;
-  font-size: 23px;
+  font-size: 21px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -95,13 +97,13 @@ p {
   color: #748495;
   font-size: 11px;
   font-weight: 400;
-  margin-top: 3px;
-  letter-spacing: 1px;
+  margin-top: 2px;
+  letter-spacing: 0.5px;
 }
 .topbar nav {
   display: flex;
   height: 100%;
-  gap: 32px;
+  gap: 24px;
 }
 .topbar nav a {
   display: flex;
@@ -111,7 +113,7 @@ p {
   font-size: 15px;
   color: #607589;
 }
-.topbar nav a.router-link-active {
+.topbar nav a.is-current {
   border-color: #087d84;
   color: #087d84;
   font-weight: 600;
@@ -151,11 +153,43 @@ p {
   color: #17374d;
   margin-right: 13px;
 }
+/* 学员端整屏外壳：顶栏与footer高度集中定义，内容区据此计算剩余高度。 */
+.user-shell {
+  --user-topbar-h: 64px;
+  --user-footer-h: 40px;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.user-shell > .practice-layout {
+  /* 内容区高度 = 视口 - 顶栏 - footer，footer始终贴底。 */
+  height: calc(100dvh - var(--user-topbar-h) - var(--user-footer-h));
+  flex: 0 0 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.user-shell .site-footer {
+  margin-top: auto;
+}
 .page-container {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   max-width: 1260px;
   margin: 0 auto;
   padding: 48px 40px 64px;
-  min-height: calc(100dvh - 222px);
+  /* 普通页面在内容区内滚动，footer 固定可见。 */
+  overflow-y: auto;
+}
+/* Agent 页占满一屏：收窄内边距，避免估算高度与footer叠加产生页面滚动。 */
+.user-shell > .practice-layout > .page-container.agent-fill {
+  padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  /* Agent 页不整体滚动，只让消息区滚动。 */
+  overflow: hidden;
 }
 .page-heading {
   display: flex;
@@ -832,6 +866,7 @@ p {
 /* 登录页延续纸张式2px圆角与纯文字品牌，不影响改密页和学习布局。 */
 .login-header.topbar {
   height: 64px;
+  flex: 0 0 auto;
   min-height: 64px;
   padding: 0 40px;
   border: 0;

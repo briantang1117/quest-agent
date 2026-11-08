@@ -215,8 +215,8 @@ Arco无边框卡片默认直角。原`.admin-users-card`和`.arco-card`权重相
 | Less主题                         | pc-web/theme.ts、pc-web/vite.config.ts           |
 | 黑体/宋体在线加载与降级          | shared/src/fonts.css                             |
 | 品牌/学习页现有样式              | pc-web/src/style.css、mobile-agent/src/style.css |
-| 页面交互/菜单回归                | pc-web/src/user-module.test.ts                   |
-| 主题/字体/圆角编译检查           | pc-web/src/arco-theme.test.ts                    |
+| 页面交互/菜单回归                | pc-web/src/tests/user-module.test.ts             |
+| 主题/字体/圆角编译检查           | pc-web/src/tests/arco-theme.test.ts              |
 
 新页面优先沿用布局及token；若列表模式增加，再提炼TablePageLayout等共享页面容器，**不要为了模仿大型旧项目提前搬来一整套未使用组件**。
 

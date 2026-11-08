@@ -2,7 +2,7 @@ import { createRouter, createWebHistory, type RouterHistory } from 'vue-router'
 import type { Pinia } from 'pinia'
 import { watch } from 'vue'
 import { authRedirect, useAuthStore } from '@quest/shared'
-import { setupRouteListener } from './utils/route-listener'
+import { setupRouteListener } from '../utils/route-listener'
 
 export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
   const router = createRouter({
@@ -14,70 +14,86 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
       return { top: 0 }
     },
     routes: [
-      { path: '/', component: () => import('./views/NotFound.vue') },
+      { path: '/', component: () => import('../views/NotFound.vue') },
       {
         path: '/practice',
-        component: () => import('./layouts/PracticeLayout.vue'),
+        component: () => import('../layouts/PracticeLayout.vue'),
         children: [
           {
             path: '',
             name: 'PracticeView',
-            component: () => import('./views/PracticeView.vue'),
+            component: () => import('../views/PracticeView.vue'),
             meta: { title: '学习工作区', pageDeepth: 1 },
+          },
+          {
+            path: 'profile',
+            name: 'ProfileView',
+            component: () => import('../views/ProfileView.vue'),
+            meta: { title: '个人中心', pageDeepth: 1 },
           },
           {
             path: 'agent',
             name: 'AgentView',
-            component: () => import('./views/AgentView.vue'),
+            component: () => import('../views/AgentView.vue'),
             meta: { title: '个人 Agent', pageDeepth: 1 },
           },
         ],
       },
       {
         path: '/admin',
-        component: () => import('./layouts/AdminLayout.vue'),
+        component: () => import('../layouts/AdminLayout.vue'),
         children: [
           { path: '', redirect: '/admin/users' },
           {
             path: 'banks',
             name: 'AdminBanksView',
-            component: () => import('./views/AdminBanksView.vue'),
+            component: () => import('../views/AdminBanksView.vue'),
             meta: { title: '公共题库', pageDeepth: 1 },
           },
           {
             path: 'banks/:id',
             name: 'AdminBankDetailView',
-            component: () => import('./views/AdminBankDetailView.vue'),
+            component: () => import('../views/AdminBankDetailView.vue'),
             meta: { title: '管理题库', pageDeepth: 2 },
           },
           {
             path: 'questions/:id',
             name: 'AdminQuestionView',
-            component: () => import('./views/AdminQuestionView.vue'),
+            component: () => import('../views/AdminQuestionView.vue'),
             meta: { title: '题目审核', pageDeepth: 3 },
           },
           {
             path: 'users',
             name: 'AdminUsersView',
-            component: () => import('./views/AdminUsersView.vue'),
+            component: () => import('../views/AdminUsersView.vue'),
             meta: { title: '用户管理', pageDeepth: 1 },
+          },
+          {
+            path: 'logs',
+            name: 'AdminAiLogsView',
+            component: () => import('../views/AdminAiLogsView.vue'),
+            meta: { title: '系统日志', pageDeepth: 1 },
           },
         ],
       },
-      { path: '/login', component: () => import('./views/LoginView.vue'), meta: { title: '登录' } },
+      {
+        path: '/login',
+        component: () => import('../views/LoginView.vue'),
+        meta: { title: '登录' },
+      },
       {
         path: '/change-password',
-        component: () => import('./views/ChangePasswordView.vue'),
+        component: () => import('../views/ChangePasswordView.vue'),
         meta: { title: '修改密码' },
       },
       {
         path: '/dev/connection',
-        component: () => import('./views/ConnectionView.vue'),
+        component: () => import('../views/ConnectionView.vue'),
         meta: { title: '连接诊断' },
       },
       {
         path: '/:pathMatch(.*)*',
-        component: () => import('./views/NotFound.vue'),
+        component: () => import('../views/NotFound.vue'),
         meta: { title: '页面不存在' },
       },
     ],

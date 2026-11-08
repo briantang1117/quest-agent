@@ -4,8 +4,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import ArcoVue from '@arco-design/web-vue'
 import { useAuthStore, type UserProfile } from '@quest/shared'
-import { createAppRouter } from './router'
-import App from './App.vue'
+import { createAppRouter } from '../router'
+import App from '../App.vue'
 
 let wrapper: VueWrapper | undefined
 afterEach(() => {

@@ -4,9 +4,9 @@ import { defineComponent, h, nextTick, onUnmounted, ref, watch } from 'vue'
 import { createPinia } from 'pinia'
 import ArcoVue from '@arco-design/web-vue'
 import { useAuthStore, type UserProfile } from '@quest/shared'
-import AdminLayout from './layouts/AdminLayout.vue'
-import PracticeLayout from './layouts/PracticeLayout.vue'
-import { createAppRouter } from './router'
+import AdminLayout from '../layouts/AdminLayout.vue'
+import PracticeLayout from '../layouts/PracticeLayout.vue'
+import { createAppRouter } from '../router'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import {
   createMemoryHistory,
@@ -15,7 +15,7 @@ import {
   useRoute,
   type RouteRecordRaw,
 } from 'vue-router'
-import DepthRouterView from './components/DepthRouterView.vue'
+import DepthRouterView from '../components/DepthRouterView.vue'
 
 const wrappers: VueWrapper[] = []
 beforeEach(() => {

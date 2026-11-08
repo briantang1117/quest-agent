@@ -33,6 +33,10 @@ class PublicBankModuleTest {
     @Autowired org.springframework.beans.factory.ObjectProvider<org.springframework.transaction.PlatformTransactionManager> managers;
     @org.springframework.test.context.bean.override.mockito.MockitoBean com.quest.api.publicbank.PublicAiClient ai;
     @org.springframework.test.context.bean.override.mockito.MockitoBean com.quest.api.publicbank.PublicBatchExecutor batches;
+    /** 该用例只验证不重试，审计跳过写库。 */
+    private com.quest.api.coach.AiCallAudit audit(){
+        return new com.quest.api.coach.AiCallAudit(new org.springframework.beans.factory.support.DefaultListableBeanFactory().getBeanProvider(JdbcTemplate.class),json,"disabled");
+    }
     static final String PASSWORD = "Initial-password-123";
     @BeforeEach void schema() {
         org.mockito.Mockito.when(batches.start(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->((java.util.function.Supplier<?>)call.getArgument(1)).get());
@@ -195,7 +199,7 @@ class PublicBankModuleTest {
         String admin=token("admin"),bank=bank(admin);
         var task=postData("/api/v1/admin/public-banks/"+bank+"/imports",admin,Map.of("text","单题"),200);
         var calls=new java.util.concurrent.atomic.AtomicInteger();
-        var provider=new com.quest.api.publicbank.PublicAiClient(json,"http://127.0.0.1:1","token","secret-secret-secret-secret-secret") {
+        var provider=new com.quest.api.publicbank.PublicAiClient(json,"http://127.0.0.1:1","token","secret-secret-secret-secret-secret",audit()) {
             @Override public JsonNode extract(String text){calls.incrementAndGet();throw new UserFailure(503,50322,"SECRET_PROVIDER");}
         };
         var processor=new com.quest.api.publicbank.PublicImportProcessor(db,managers.getObject(),provider,json);

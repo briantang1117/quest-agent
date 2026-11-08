@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import { ApiError, notifyError } from '@quest/shared'
-import { initializeErrorFeedback } from './error-feedback'
-import { initializeErrorFeedback as initializeMobileFeedback } from '../../mobile-agent/src/error-feedback'
+import { initializeErrorFeedback } from '../feedback'
+import { initializeErrorFeedback as initializeMobileFeedback } from '../../../mobile-agent/src/feedback'
 let cleanup: (() => void) | undefined
 afterEach(() => {
   cleanup?.()

@@ -5,22 +5,22 @@ export const router = createRouter({
     { path: '/', redirect: '/sessions' },
     {
       path: '/sessions',
-      component: () => import('./views/SessionsView.vue'),
+      component: () => import('../views/SessionsView.vue'),
       meta: { title: '学习助手' },
     },
     {
       path: '/login',
-      component: () => import('./views/LoginView.vue'),
+      component: () => import('../views/LoginView.vue'),
       meta: { title: '连接与登录' },
     },
     {
       path: '/chat/:id',
-      component: () => import('./views/ChatView.vue'),
+      component: () => import('../views/ChatView.vue'),
       meta: { title: 'Agent 对话' },
     },
     {
       path: '/:pathMatch(.*)*',
-      component: () => import('./views/NotFound.vue'),
+      component: () => import('../views/NotFound.vue'),
       meta: { title: '页面不存在' },
     },
   ],

@@ -1,54 +1,166 @@
+<script setup lang="ts">
+import { onActivated, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { IconArrowRight, IconMessage, IconUser } from '@arco-design/web-vue/es/icon'
+import {
+  createCoachApi,
+  notifyError,
+  subjectLabel,
+  useAuthStore,
+  type StudySubject,
+  type CoachSessionSummary,
+} from '@quest/shared'
+const api = createCoachApi(useAuthStore()),
+  router = useRouter()
+const subject = ref<StudySubject | null>(null),
+  sessions = ref<CoachSessionSummary[]>([]),
+  busy = ref(false),
+  loaded = ref(false)
+let pending = false
+async function load() {
+  if (pending) return
+  pending = true
+  try {
+    const [preference, list] = await Promise.all([api.preference(), api.list()])
+    subject.value = preference.subject
+    sessions.value = list.list
+    loaded.value = true
+  } catch (e) {
+    notifyError(e)
+  } finally {
+    pending = false
+  }
+}
+onMounted(load)
+onActivated(load)
+async function start(mode: 'practice' | 'chat') {
+  if (busy.value || !subject.value) return
+  busy.value = true
+  try {
+    const session = await api.create(crypto.randomUUID(), mode)
+    await router.push({ path: '/practice/agent', query: { session: session.id } })
+  } catch (e) {
+    notifyError(e)
+  } finally {
+    busy.value = false
+  }
+}
+</script>
 <template>
   <section class="page-heading">
     <div>
       <p class="breadcrumb">学习 / 刷题空间</p>
-      <h1>从一道题，开始理清思路。</h1>
-      <p class="lead">这里将承载日常练习、错题复习与真题模考。现在先把学习空间准备好。</p>
+      <h1>从一道题，聊懂一个知识点。</h1>
+      <p class="lead">不必选试卷。个人 Agent 会从当前科目的已发布题目中，陪你一道一道练。</p>
     </div>
-    <a-tag color="cyan">基础框架已就绪</a-tag>
+    <RouterLink to="/practice/profile" class="subject-entry"
+      ><IconUser />{{ subjectLabel(subject) }}</RouterLink
+    >
   </section>
-  <section class="practice-stage">
-    <div class="stage-copy">
-      <span class="subtle-label">你的练习区域</span>
-      <h2>题库接入后，<br />在这里开始第一次练习。</h2>
-      <p>你已进入自己的学习工作区。私有题库与练习服务尚未接入，当前不会读取题目或生成学习记录。</p>
-      <a-button type="primary" disabled>开始练习（未接入）</a-button
-      ><RouterLink class="text-link" to="/practice/agent">查看个人 Agent 接入状态</RouterLink>
-    </div>
-    <div class="study-sheet" aria-hidden="true">
-      <div class="sheet-tab">学习空间</div>
-      <div class="sheet-line long"></div>
-      <div class="sheet-line"></div>
-      <div class="sheet-option"><i></i><span></span></div>
-      <div class="sheet-option"><i></i><span></span></div>
-      <div class="sheet-option"><i></i><span></span></div>
-      <div class="sheet-caption">等待真实题目</div>
-    </div>
-  </section>
-  <section class="feature-list" aria-label="功能接入状态">
-    <article>
-      <span class="feature-symbol">练</span>
-      <div>
-        <h3>日常练习</h3>
-        <p>按知识点选题、作答与解析，等待练习服务接入。</p>
-      </div>
-      <a-tag>未接入</a-tag>
+  <a-alert v-if="loaded && !subject" type="info"
+    >先到<RouterLink to="/practice/profile">个人中心选择学习科目</RouterLink
+    >，再开始你的第一段练习。</a-alert
+  >
+  <div class="coach-entry-grid">
+    <article class="coach-entry primary">
+      <span class="entry-symbol" aria-hidden="true">练</span>
+      <h2>开始互动刷题</h2>
+      <p>Agent 出一道题，你来选择或说思路。答完核对，再聊聊为什么。</p>
+      <a-button
+        data-test="start-practice"
+        type="primary"
+        :loading="busy"
+        :disabled="!subject"
+        @click="start('practice')"
+        >开始刷题<template #icon><IconArrowRight /></template
+      ></a-button>
     </article>
-    <article>
-      <span class="feature-symbol">复</span>
-      <div>
-        <h3>错题复习</h3>
-        <p>基于真实作答记录整理错题，不预填学习统计。</p>
-      </div>
-      <a-tag>未接入</a-tag>
+    <article class="coach-entry">
+      <IconMessage class="entry-symbol" />
+      <h2>和个人 Agent 聊聊</h2>
+      <p>从一个不懂的知识点开始，也可以在对话中随时转入练习。</p>
+      <a-button :disabled="!subject || busy" @click="start('chat')">进入对话</a-button>
     </article>
-    <article>
-      <span class="feature-symbol">考</span>
-      <div>
-        <h3>真题模考</h3>
-        <p>试卷、计时与成绩报告将在后续业务阶段实现。</p>
-      </div>
-      <a-tag>未接入</a-tag>
-    </article>
+  </div>
+  <section v-if="sessions.length" class="recent-coach">
+    <h2>继续上次对话</h2>
+    <a-list :bordered="false"
+      ><a-list-item v-for="session in sessions.slice(0, 5)" :key="session.id"
+        ><RouterLink :to="{ path: '/practice/agent', query: { session: session.id } }"
+          ><strong>{{ session.title }}</strong
+          ><span>{{ subjectLabel(session.subject) }}</span
+          ><IconArrowRight /></RouterLink></a-list-item
+    ></a-list>
   </section>
 </template>
+<style scoped>
+.subject-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  color: var(--color-text-2);
+  padding: 10px 14px;
+  background: white;
+  border: 1px solid var(--color-border-2);
+  border-radius: 2px;
+}
+.coach-entry-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  align-items: stretch;
+  gap: 24px;
+  margin-top: 28px;
+}
+.coach-entry {
+  display: flex;
+  flex-direction: column;
+  padding: 32px;
+  background: white;
+  border: 1px solid var(--color-border-2);
+  border-radius: 2px;
+}
+.coach-entry.primary {
+  border-top: 3px solid #087d84;
+}
+.entry-symbol {
+  font-size: 30px;
+  color: #087d84;
+  font-family: var(--font-serif);
+}
+.coach-entry h2 {
+  margin-top: 20px;
+}
+.coach-entry p {
+  color: var(--color-text-3);
+}
+/* 两卡等高由grid拉伸决定，按钮靠底对齐，不再用固定min-height硬撑留白。 */
+.coach-entry .arco-btn {
+  align-self: flex-start;
+  margin-top: auto;
+}
+.recent-coach {
+  margin-top: 32px;
+}
+.recent-coach a {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+}
+.recent-coach a span {
+  color: var(--color-text-3);
+  margin-left: auto;
+}
+.recent-coach strong {
+  font-weight: 500;
+}
+@media (max-width: 800px) {
+  .coach-entry-grid {
+    grid-template-columns: 1fr;
+  }
+  .page-heading {
+    flex-direction: column;
+  }
+}
+</style>

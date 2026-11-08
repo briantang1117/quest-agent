@@ -4,7 +4,7 @@ import { Message } from '@arco-design/web-vue'
 import '@arco-design/web-vue/es/message/style/index.js'
 import { useRouter } from 'vue-router'
 import { ApiError, homePath, PASSWORD_HINT, useAuthStore } from '@quest/shared'
-import { passwordRule, validationRule } from '../form-rules'
+import { passwordRule, validationRule } from '../composables/form-rules'
 const auth = useAuthStore()
 const router = useRouter()
 const form = reactive({ currentPassword: '', newPassword: '', confirmPassword: '' })

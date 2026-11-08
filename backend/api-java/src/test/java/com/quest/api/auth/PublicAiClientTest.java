@@ -14,6 +14,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.*;
 
 class PublicAiClientTest {
+    /** 本测试只关心签名与不重试，审计写库用 disabled 模式跳过。 */
+    private static com.quest.api.coach.AiCallAudit audit(){
+        return new com.quest.api.coach.AiCallAudit(new org.springframework.beans.factory.support.DefaultListableBeanFactory().getBeanProvider(org.springframework.jdbc.core.JdbcTemplate.class),new ObjectMapper(),"disabled");
+    }
     @Test void signsExactBodyAndPathAndDoesNotRetryProviderFailure() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var calls=new AtomicInteger();var json=new ObjectMapper();
@@ -33,7 +37,7 @@ class PublicAiClientTest {
         });
         server.start();
         try {
-            var client=new PublicAiClient(json,"http://127.0.0.1:"+server.getAddress().getPort(),"token","secret-secret-secret-secret-secret");
+            var client=new PublicAiClient(json,"http://127.0.0.1:"+server.getAddress().getPort(),"token","secret-secret-secret-secret-secret",audit());
             assertThat(client.extract("合成材料").path("warnings").get(0).asText()).isEqualTo("unrecognized_reference_answer");
             assertThatThrownBy(()->client.extract("合成材料")).isInstanceOf(UserFailure.class);
             assertThat(calls.get()).isEqualTo(2);

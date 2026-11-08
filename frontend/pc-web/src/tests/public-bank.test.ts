@@ -5,10 +5,10 @@ import { createMemoryHistory } from 'vue-router'
 import { defineComponent, h, KeepAlive, ref } from 'vue'
 import ArcoVue from '@arco-design/web-vue'
 import { createPublicBankApi, installErrorFeedback, useAuthStore } from '@quest/shared'
-import { createAppRouter } from './router'
-import AdminBanksView from './views/AdminBanksView.vue'
-import AdminQuestionView from './views/AdminQuestionView.vue'
-import AdminBankDetailView from './views/AdminBankDetailView.vue'
+import { createAppRouter } from '../router'
+import AdminBanksView from '../views/AdminBanksView.vue'
+import AdminQuestionView from '../views/AdminQuestionView.vue'
+import AdminBankDetailView from '../views/AdminBankDetailView.vue'
 
 const wrappers: ReturnType<typeof mount>[] = []
 afterEach(() => {

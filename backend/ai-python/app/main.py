@@ -6,7 +6,9 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException
 
 from app.agent.candidate_graph import build_candidate_graph
+from app.agent.coach_graph import build_coach_graph
 from app.agent.extraction_graph import build_extraction_graph
+from app.api.coach import router as coach_router
 from app.api.pdf_import import router as pdf_import_router
 from app.api.public_import import router as public_import_router
 from app.api.routes import router
@@ -42,10 +44,16 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
                 if application.state.provider is not None
                 else None
             )
+            application.state.coach_graph = (
+                build_coach_graph(application.state.provider)
+                if application.state.provider is not None
+                else None
+            )
             yield
         finally:
             application.state.extraction_graph = None
             application.state.candidate_graph = None
+            application.state.coach_graph = None
             if application.state.search_provider is not None:
                 await application.state.search_provider.aclose()
             if application.state.provider is not None:
@@ -99,6 +107,7 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
         return {"status": "alive"}
 
     application.include_router(router)
+    application.include_router(coach_router)
     application.include_router(public_import_router)
     application.include_router(pdf_import_router)
     return application

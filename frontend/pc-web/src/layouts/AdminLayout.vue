@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   IconUserGroup,
   IconBook,
+  IconFile,
   IconDown,
   IconLock,
   IconExport,
@@ -14,7 +15,7 @@ import { notifyError, useAuthStore } from '@quest/shared'
 import './admin-layout.css'
 import DepthRouterView from '../components/DepthRouterView.vue'
 import AdminBreadcrumb from '../components/AdminBreadcrumb.vue'
-import { useCacheScope } from '../use-cache-scope'
+import { useCacheScope } from '../composables/cache-scope'
 const cacheScope = useCacheScope()
 const auth = useAuthStore()
 const router = useRouter()
@@ -22,7 +23,11 @@ const route = useRoute()
 const contentSection = computed(
   () => route.path.startsWith('/admin/banks') || route.path.startsWith('/admin/questions/'),
 )
+// 系统日志挂在"系统管理"下，与用户管理同级，但不复用用户管理的选中态。
+const systemSection = computed(() => route.path.startsWith('/admin/logs'))
 const breadcrumbs = computed(() => {
+  // 系统日志与用户管理并列，同属系统管理一级。
+  if (systemSection.value) return [{ label: '系统管理' }, { label: '系统日志' }]
   if (!contentSection.value)
     return [{ label: '系统管理' }, { label: '用户管理' }, { label: '用户列表' }]
   const items: { label: string; to?: string }[] = [
@@ -48,9 +53,10 @@ const breadcrumbBackTo = computed(
 )
 const openKeys = ref<string[]>([])
 watch(
-  contentSection,
-  (isContent) => {
-    openKeys.value = [isContent ? 'question-banks' : 'accounts']
+  [contentSection, systemSection],
+  ([isContent, isSystem]) => {
+    // 内容管理只有一组；系统管理下用户与日志并列，展开当前所在那一组即可。
+    openKeys.value = [isContent ? 'question-banks' : isSystem ? 'system-logs' : 'accounts']
   },
   { immediate: true },
 )
@@ -135,7 +141,7 @@ async function logout() {
       <a-menu
         v-model:open-keys="openKeys"
         :collapsed="collapsed"
-        :selected-keys="[contentSection ? 'banks' : 'users']"
+        :selected-keys="[contentSection ? 'banks' : systemSection ? 'logs' : 'users']"
         :auto-open-selected="true"
         :level-indent="34"
       >
@@ -145,10 +151,17 @@ async function logout() {
             >公共题库</a-menu-item
           ></a-sub-menu
         >
-        <a-sub-menu v-else key="accounts"
-          ><template #icon><IconUserGroup /></template><template #title>用户管理</template>
-          <a-menu-item key="users" @click="router.push('/admin/users')">用户列表</a-menu-item>
-        </a-sub-menu>
+        <!-- 系统管理下并列两组：用户管理、系统日志，不互相替换。 -->
+        <template v-else>
+          <a-sub-menu key="accounts"
+            ><template #icon><IconUserGroup /></template><template #title>用户管理</template>
+            <a-menu-item key="users" @click="router.push('/admin/users')">用户列表</a-menu-item>
+          </a-sub-menu>
+          <a-sub-menu key="system-logs"
+            ><template #icon><IconFile /></template><template #title>系统日志</template>
+            <a-menu-item key="logs" @click="router.push('/admin/logs')">AI 调用记录</a-menu-item>
+          </a-sub-menu>
+        </template>
       </a-menu>
       <a-button
         class="admin-collapse"

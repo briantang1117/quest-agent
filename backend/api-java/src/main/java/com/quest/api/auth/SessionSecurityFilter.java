@@ -33,6 +33,8 @@ final class SessionSecurityFilter extends OncePerRequestFilter {
                 if (identity.user().mustChangePassword() && !selfService) throw new UserFailure(403, 40310, "Password change required");
                 boolean adminRoute = path.equals("/api/v1/admin") || path.startsWith("/api/v1/admin/");
                 if (adminRoute && !identity.user().role().equals("admin")) throw UserFailure.denied();
+                // AI 调用审计只读查询：Admin 可查，普通用户与内容管理端点不得复用此路径。
+                boolean aiAudit = (path.equals("/api/v1/admin/ai-calls") || path.matches("/api/v1/admin/ai-calls/[0-9]+")) && request.getMethod().equals("GET");
                 // Admin 白名单只开放账号元数据、本人认证与系统信息，其余未来内容端点也默认拒绝。
                 boolean userManagement = (path.equals("/api/v1/admin/users") && (request.getMethod().equals("GET") || request.getMethod().equals("POST")))
                     || (path.matches("/api/v1/admin/users/[^/]+/status") && request.getMethod().equals("PATCH"))
@@ -51,7 +53,7 @@ final class SessionSecurityFilter extends OncePerRequestFilter {
                     || (path.matches("/api/v1/admin/public-imports/[^/]+") && request.getMethod().equals("GET"))
                     || (path.matches("/api/v1/admin/public-questions/[^/]+") && (request.getMethod().equals("GET") || request.getMethod().equals("PUT")))
                     || (path.matches("/api/v1/admin/public-questions/[^/]+/(confirm|publish)") && request.getMethod().equals("POST"));
-                if (identity.user().role().equals("admin") && !selfService && !userManagement && !publicManagement && !path.equals("/api/v1/system/info")
+                if (identity.user().role().equals("admin") && !selfService && !userManagement && !publicManagement && !aiAudit && !path.equals("/api/v1/system/info")
                         && !path.equals("/actuator/health") && !path.startsWith("/actuator/health/")) throw UserFailure.denied();
             } catch (UserFailure failure) {
                 SecurityContextHolder.clearContext();

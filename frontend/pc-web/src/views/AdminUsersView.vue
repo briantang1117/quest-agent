@@ -12,7 +12,7 @@ import {
   type UserProfile,
   type UserStatus,
 } from '@quest/shared'
-import { displayNameRule, passwordRule, usernameRule } from '../form-rules'
+import { displayNameRule, passwordRule, usernameRule } from '../composables/form-rules'
 const auth = useAuthStore()
 const api = createUserApi(auth)
 const filters = reactive({ keyword: '', status: '' as UserStatus | '' })

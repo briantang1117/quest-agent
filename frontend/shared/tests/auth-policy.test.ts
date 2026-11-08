@@ -47,10 +47,15 @@ describe('授权路由策略', () => {
       '/admin/banks',
       '/admin/banks/12345678-1234-1234-1234-123456789abc',
       '/admin/questions/12345678-1234-1234-1234-123456789abc',
+      // 系统日志与用户管理并列，Admin 必须可达，普通用户必须被挡回学习空间。
+      '/admin/logs',
     ]) {
       expect(authRedirect(admin, path)).toBeNull()
       expect(authRedirect(student, path)).toBe('/practice')
     }
+    // 日志只开放精确路径，不能借前缀顺带放开其他后台端点。
+    for (const path of ['/admin/logs/1', '/admin/logs-export', '/admin/log'])
+      expect(authRedirect(admin, path)).toBe('/admin/users')
     for (const path of [
       '/admin/questions/../users',
       '/admin/questions/%2fsecret',

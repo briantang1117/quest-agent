@@ -19,13 +19,27 @@ import java.util.*;
 public class PublicAiClient {
     private final ObjectMapper json;
     private final String base,token,secret;
+    private final com.quest.api.coach.AiCallAudit audit;
     private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build();
     public PublicAiClient(ObjectMapper json,@Value("${AI_SERVICE_URL:http://127.0.0.1:8000}") String base,
-                          @Value("${INTERNAL_SERVICE_TOKEN:}") String token,@Value("${INTERNAL_HMAC_SECRET:}") String secret){this.json=json;this.base=base;this.token=token;this.secret=secret;}
-    public JsonNode extract(String text) { return post("/internal/public-import",Map.of("scope","admin","text",text),256*1024); }
-    public JsonNode extractCandidate(String text,JsonNode candidate) { return post("/internal/public-import",Map.of("scope","admin","text",text,"candidate",candidate),256*1024); }
-    public JsonNode inspectPdf(byte[] pdf) { return post("/internal/pdf-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),2*1024*1024); }
-    private JsonNode post(String path,Object payload,int maxResponse) {
+                          @Value("${INTERNAL_SERVICE_TOKEN:}") String token,@Value("${INTERNAL_HMAC_SECRET:}") String secret,
+                          com.quest.api.coach.AiCallAudit audit){this.json=json;this.base=base;this.token=token;this.secret=secret;this.audit=audit;}
+    /** actor 与 traceId 只用于审计归因，不参与签名。 */
+    public record Caller(Long actor,String traceId){}
+    public JsonNode coachTurn(Object payload,Caller caller) { return post("/internal/coach-turn",payload,128*1024,caller); }
+    public JsonNode coachTurn(Object payload) { return post("/internal/coach-turn",payload,128*1024,null); }
+    public JsonNode extract(String text) { return post("/internal/public-import",Map.of("scope","admin","text",text),256*1024,null); }
+    public JsonNode extractCandidate(String text,JsonNode candidate) { return post("/internal/public-import",Map.of("scope","admin","text",text,"candidate",candidate),256*1024,null); }
+    public JsonNode inspectPdf(byte[] pdf) { return post("/internal/pdf-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),2*1024*1024,null); }
+    private JsonNode post(String path,Object payload,int maxResponse){return post(path,payload,maxResponse,null);}
+    private JsonNode post(String path,Object payload,int maxResponse,Caller caller) {
+        long started=System.nanoTime();
+        String action="ai."+path.replace("/internal/","").replace('/','_');
+        try{return doPost(path,payload,maxResponse,caller,action,started);}
+        catch(RuntimeException failure){audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,null,failure,elapsed(started),1,null);throw failure;}
+    }
+    private long elapsed(long started){return (System.nanoTime()-started)/1_000_000;}
+    private JsonNode doPost(String path,Object payload,int maxResponse,Caller caller,String action,long started) {
         if(token.isBlank() || secret.length()<32)throw new UserFailure(503,50321,"内部AI服务未配置");
         try {
             URI root=URI.create(base);
@@ -41,11 +55,20 @@ public class PublicAiClient {
             var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
             byte[] raw;
             try(var stream=response.body()){raw=stream.readNBytes(maxResponse+1);}
-            if(response.statusCode()!=200 || raw.length>maxResponse)throw new IllegalStateException();
-            var envelope=json.readTree(raw);
+            if(raw.length>maxResponse)throw new IllegalStateException();
+            // 非 200 时把上游业务码带出来，不能统一吞成一句话，否则无法定位。
+            JsonNode envelope=json.readTree(raw);
+            if(response.statusCode()!=200){
+                String upstream=String.valueOf(envelope.path("code").asInt(0));
+                throw new UserFailure(503,50200,"AI服务返回错误（上游码 "+upstream+"）");
+            }
             if(!envelope.path("code").isIntegralNumber() || envelope.path("code").asInt()!=0 || !envelope.path("data").isObject())throw new IllegalStateException();
-            return envelope.get("data");
+            JsonNode data=envelope.get("data");
+            audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
+            return data;
         } catch(InterruptedException failure){Thread.currentThread().interrupt();throw new UserFailure(503,50322,"AI处理已中断，未自动重试");}
+        // UserFailure 已带明确原因（例如上游业务码），不能被下面兜底覆盖成通用文案。
+        catch(UserFailure failure){throw failure;}
         catch(Exception failure){throw new UserFailure(503,50322,"AI处理失败，请核对服务状态后人工处理");}
     }
 }

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { overwriteClientIp } from '../../proxy-client-ip'
+import { overwriteClientIp } from '../../../proxy-client-ip'
 
 function outgoing() {
   const headers = new Map<string, string>([
