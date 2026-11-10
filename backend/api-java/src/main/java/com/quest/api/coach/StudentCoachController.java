@@ -31,6 +31,7 @@ public class StudentCoachController {
     @GetMapping("/coach/sessions") public ApiResponse<?> list(HttpServletRequest r){return ok(service.list(who(r)),r);}
     @PostMapping("/coach/sessions") public ApiResponse<?> create(@RequestBody StudentCoachService.Create body,HttpServletRequest r){return ok(service.create(who(r),body),r);}
     @GetMapping("/coach/sessions/{id}") public ApiResponse<?> get(@PathVariable String id,HttpServletRequest r){return ok(service.get(who(r),id),r);}
+    @DeleteMapping("/coach/sessions/{id}") public ApiResponse<?> delete(@PathVariable String id,HttpServletRequest r){service.delete(who(r),id);return ok(null,r);}
     @PostMapping("/coach/sessions/{id}/turns") public ApiResponse<?> turn(@PathVariable String id,@RequestBody StudentCoachService.Turn body,HttpServletRequest r){return ok(service.turn(who(r),id,body,TraceFilter.traceId(r)),r);}
 
     /** 单一幂等轮次：先保存判分，再流式回答，提交完整状态后才发送 done。 */
@@ -47,10 +48,9 @@ public class StudentCoachController {
         try{
             push.execute(()->{
                 started.set(true);
-                ScheduledFuture<?> timeout=null;boolean processing=false;
+                ScheduledFuture<?> timeout=null;
                 try{
                     timeout=clock.schedule(control::close,140,TimeUnit.SECONDS);
-                    control.attachThread();processing=true;
                     var result=service.streamTurn(identity,pending,traceId,(event,data)->{
                         control.check();
                         try{emitter.send(SseEmitter.event().name(event).data(data,MediaType.APPLICATION_JSON));}

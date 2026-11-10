@@ -38,6 +38,12 @@ def test_optional_syllabus_reaches_all_coach_prompts_with_citation_safety(path, 
     system = provider.messages[0][0]["content"]
     assert "考纲" in system and "不可信" in system
     assert "版本" in system and "页码" in system and "完整范围" in system
+    assert "优先直接回答用户的学习问题" in system
+    assert "不要在正文中展示内部标识" in system
+    assert "日常讲解、复习计划不主动罗列版本、文件全名或页码" in system
+    assert "用户明确要求出处、页码或核对考纲原文时" in system
+    assert "不要把复习建议说成考纲规定" in system
+    assert "涉及考纲时引用所给 version_id" not in system
     assert "PRIVATE_REFERENCE" not in system
     assert json.loads(provider.messages[0][1]["content"])["syllabus"] == [citation]
 

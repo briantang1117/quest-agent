@@ -90,7 +90,9 @@ it('导览只查目标年份，章节携带首句进入Agent', async () => {
   await wrapper.get('[data-test="explain-syllabus-section"]').trigger('click')
   await flushPromises()
   await vi.waitFor(() => expect(router.currentRoute.value.path).toBe('/practice/agent'))
-  expect(router.currentRoute.value.query.prompt).toContain('判断推理')
+  expect(router.currentRoute.value.query.prompt).toBe(
+    '请结合2027年考纲，讲讲“判断推理”主要考什么，以及我该怎么准备。',
+  )
 })
 it('缺年份不请求考纲，缺版本不换成年份其他资料', async () => {
   const unset = await render(SyllabusGuideView, '/practice/syllabus', () => ({

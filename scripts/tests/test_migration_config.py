@@ -74,10 +74,28 @@ class MigrationConfigTests(unittest.TestCase):
         self.assertEqual(env['SPRING_FLYWAY_TARGET'], '11')
         self.assertEqual(env['QUEST_PUBLIC_IMPORT_ENABLED'], 'false')
 
+    def test_explicit_v12_target_keeps_clean_and_processing_disabled(self):
+        with patch.object(migrate, 'service_environment', return_value={
+                'QUEST_PUBLIC_IMPORT_ENABLED': 'true'}):
+            env = migrate.migration_environment(Path('/local/test'), target='12')
+        self.assertEqual(env['SPRING_FLYWAY_TARGET'], '12')
+        self.assertEqual(env['SPRING_FLYWAY_CLEAN_DISABLED'], 'true')
+        self.assertEqual(env['QUEST_PUBLIC_IMPORT_ENABLED'], 'false')
+
+    def test_v12_soft_delete_migration_copies_match_without_data_changes(self):
+        root = SCRIPTS.parent
+        name = 'V12__student_coach_session_soft_delete.sql'
+        api_sql = (root / 'backend/api-java/src/main/resources/db/migration' / name).read_text()
+        self.assertEqual(api_sql, (root / 'deploy/migrations' / name).read_text())
+        statements = '\n'.join(line for line in api_sql.splitlines()
+                               if not line.lstrip().startswith('--')).strip()
+        self.assertEqual(statements, 'ALTER TABLE student_coach_session ADD COLUMN '
+                         'deleted_at TIMESTAMP WITH TIME ZONE;')
+
     def test_unknown_target_is_rejected_before_reading_credentials(self):
         with patch.object(migrate, 'service_environment') as load:
             with self.assertRaises(ValueError):
-                migrate.migration_environment(Path('/local/test'), target='12')
+                migrate.migration_environment(Path('/local/test'), target='13')
             load.assert_not_called()
 
 

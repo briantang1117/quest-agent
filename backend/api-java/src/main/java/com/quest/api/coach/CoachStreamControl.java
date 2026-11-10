@@ -9,7 +9,8 @@ public final class CoachStreamControl implements AutoCloseable {
     private volatile Thread worker;
     private Closeable upstream;
 
-    public void attachThread(){worker=Thread.currentThread();}
+    public synchronized void attachThread(){check();worker=Thread.currentThread();}
+    public synchronized void detachThread(){if(worker==Thread.currentThread())worker=null;}
     public synchronized void attach(Closeable stream){
         if(cancelled){closeQuietly(stream);check();}
         upstream=stream;

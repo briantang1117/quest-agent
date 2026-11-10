@@ -22,6 +22,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test") @AutoConfigureMockMvc
 class StudentCoachTest {
     @Autowired MockMvc mvc; @Autowired JdbcTemplate db; @Autowired ObjectMapper json;
+    @Autowired com.quest.api.coach.StudentCoachService coach; @Autowired UserService users;
     @org.springframework.test.context.bean.override.mockito.MockitoBean com.quest.api.coach.CoachAiClient ai;
     static final String PASSWORD="Initial-password-123";
     static String h2(String sql){return sql.replace("TIMESTAMPTZ","TIMESTAMP WITH TIME ZONE").replace("embedding vector","embedding TEXT").replace("AND vector_dims(embedding)=embedding_dimensions","");}
@@ -29,12 +30,16 @@ class StudentCoachTest {
         db.execute("DROP ALL OBJECTS");db.execute("CREATE ROLE quest_app");db.execute("CREATE ROLE quest_ai");db.execute("CREATE SEQUENCE app_user_id_seq");db.execute("CREATE SEQUENCE audit_log_id_seq");
         db.execute("CREATE TABLE app_user(id BIGSERIAL PRIMARY KEY,username VARCHAR(64) UNIQUE NOT NULL,password_hash VARCHAR(128) NOT NULL,display_name VARCHAR(128) NOT NULL,status VARCHAR(16) DEFAULT 'active',created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
         db.execute("CREATE TABLE audit_log(id BIGSERIAL PRIMARY KEY,actor BIGINT,action VARCHAR(64),target_type VARCHAR(64),target_id VARCHAR(64),before_data JSONB,after_data JSONB,ip VARCHAR(45),user_agent TEXT,trace_id VARCHAR(64),ai_job_id BIGINT,created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");TestUserSchema.applyV4(db);
-        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
+        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql","V12__student_coach_session_soft_delete.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
         var bcrypt=new BCryptPasswordEncoder();for(String name:List.of("admin","alice","bob"))db.update("INSERT INTO app_user(username,password_hash,display_name,account_type,must_change_password) VALUES (?,?,?,?,FALSE)",name,bcrypt.encode(PASSWORD),name,name.equals("admin")?"admin":"student");
         var chatReply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"我们一起理解这个知识点。\"}");
         // Service 走带归因的三参重载，两参重载仅为兼容保留，两者都要打桩。
         org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any())).thenReturn(chatReply);
         org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(chatReply);
+    }
+    @org.junit.jupiter.api.AfterEach void completedStreamsLeaveNoRegisteredControls()throws Exception{
+        var registry=com.quest.api.coach.StudentCoachService.class.getDeclaredField("activeStreams");registry.setAccessible(true);
+        assertThat((Set<?>)registry.get(coach)).isEmpty();
     }
     /** 断言三参重载的调用次数，与 Service 实际调用口径一致。 */
     void turnCount(int times){
@@ -62,6 +67,150 @@ class StudentCoachTest {
         return q;
     }
     JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode),200);}
+    @Test void deletedSessionIsHiddenAndCannotReplayOrRecreate()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");
+        UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var input=Map.of("requestId",UUID.randomUUID(),"action","chat","text","私人历史");
+        postData("/api/v1/coach/sessions/"+session+"/turns",alice,input,200);
+        String state=db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session);
+        mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice).header("X-Trace-Id","delete-session-test"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(0)).andExpect(jsonPath("$.traceId").value("delete-session-test"));
+        assertThat(db.queryForObject("SELECT deleted_at FROM student_coach_session WHERE id=?",java.time.OffsetDateTime.class,session)).isNotNull();
+        assertThat(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo(state);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM student_coach_turn WHERE session_id=?",Integer.class,session)).isEqualTo(1);
+        mvc.perform(get("/api/v1/coach/sessions").header("Authorization","Bearer "+alice)).andExpect(status().isOk()).andExpect(jsonPath("$.data.list.length()").value(0));
+        mvc.perform(get("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isNotFound());
+        postData("/api/v1/coach/sessions/"+session+"/turns",alice,input,404);
+        postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","next"),404);
+        mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isNotFound());
+        postData("/api/v1/coach/sessions",alice,Map.of("requestId",session,"mode","chat"),404);
+        mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isNotFound());
+        turnCount(1);
+    }
+    @Test void deleteIsOwnerOnlyAndRequiresValidUnrestrictedLogin()throws Exception{
+        String alice=token("alice"),bob=token("bob"),admin=token("admin");preference(alice,"vocational_aptitude");
+        UUID session=UUID.randomUUID();create(alice,session,"chat");String path="/api/v1/coach/sessions/"+session;
+        mvc.perform(delete(path)).andExpect(status().isUnauthorized()).andExpect(jsonPath("$.code").value(40100));
+        mvc.perform(delete(path).header("Authorization","Bearer invalid")).andExpect(status().isUnauthorized());
+        mvc.perform(delete(path).header("Authorization","Bearer "+bob)).andExpect(status().isNotFound());
+        mvc.perform(delete(path).header("Authorization","Bearer "+admin)).andExpect(status().isForbidden());
+        mvc.perform(delete("/api/v1/coach/sessions/"+UUID.randomUUID()).header("Authorization","Bearer "+alice)).andExpect(status().isNotFound());
+        mvc.perform(delete("/api/v1/coach/sessions/not-a-uuid").header("Authorization","Bearer "+alice)).andExpect(status().isBadRequest());
+        db.update("UPDATE app_user SET must_change_password=TRUE WHERE username='alice'");
+        mvc.perform(delete(path).header("Authorization","Bearer "+alice)).andExpect(status().isForbidden());
+        db.update("UPDATE app_user SET must_change_password=FALSE WHERE username='alice'");
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+        mvc.perform(delete(path).header("Authorization","Bearer "+alice)).andExpect(status().isUnauthorized());
+        assertThat(db.queryForObject("SELECT deleted_at FROM student_coach_session WHERE id=?",java.time.OffsetDateTime.class,session)).isNull();
+    }
+    @Test void deleteCancelsActiveStreamAndFailsClaimWithoutRevivingSession()throws Exception{
+        String alice=token("alice"),bob=token("bob");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);var interrupted=new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.when(ai.route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{
+            entered.countDown();
+            try{assertThat(release.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();}
+            catch(InterruptedException cancelled){interrupted.countDown();}
+            // 模拟上游忽略取消而迟到返回，仍不能继续讲解或恢复会话。
+            return json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"\"}");
+        });
+        UUID request=UUID.randomUUID();var input=Map.of("requestId",request,"action","chat","text","你好");
+        var result=mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isOk()).andReturn();
+        String preserved;
+        try{
+            assertThat(entered.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+bob)).andExpect(status().isNotFound());
+            assertThat(interrupted.getCount()).isEqualTo(1);
+            preserved=db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session);
+            mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+            assertThat(Thread.currentThread().isInterrupted()).isFalse();
+            assertThat(interrupted.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }finally{release.countDown();result.getAsyncResult(5000);}
+        String events=mvc.perform(asyncDispatch(result)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        assertThat(events).doesNotContain("event:done","event:delta");
+        assertDeletedClaim(session,request,preserved);
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.never()).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        mvc.perform(get("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isNotFound());
+    }
+    private void assertDeletedClaim(UUID session,UUID request,String state){
+        assertThat(db.queryForObject("SELECT deleted_at FROM student_coach_session WHERE id=?",java.time.OffsetDateTime.class,session)).isNotNull();
+        assertThat(db.queryForObject("SELECT processing_request FROM student_coach_session WHERE id=?",UUID.class,session)).isNull();
+        assertThat(db.queryForObject("SELECT status FROM student_coach_turn WHERE session_id=? AND request_id=?",String.class,session,request)).isEqualTo("failed");
+        assertThat(db.queryForObject("SELECT response_json FROM student_coach_turn WHERE session_id=? AND request_id=?",String.class,session,request)).isNull();
+        assertThat(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo(state);
+    }
+    @Test void deleteStaleProcessingClaimWithoutActiveControl()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");UUID request=UUID.randomUUID();
+        db.update("INSERT INTO student_coach_turn(id,session_id,request_id,request_hash,status,created_at) VALUES (?,?,?,?,'processing',?)",UUID.randomUUID(),session,request,"old",java.time.OffsetDateTime.now().minusDays(1));
+        db.update("UPDATE student_coach_session SET processing_request=? WHERE id=?",request,session);
+        String state=db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session);
+        mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+        assertDeletedClaim(session,request,state);
+    }
+    @Test void deleteClosesUpstreamAndLateGradedCompletionCannotOverwriteDeletion()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);UUID session=UUID.randomUUID();var initial=create(alice,session,"practice");
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);var closed=new java.util.concurrent.CountDownLatch(1);
+        var active=new java.util.concurrent.atomic.AtomicReference<com.quest.api.coach.CoachStreamControl>();
+        org.mockito.Mockito.doAnswer(call->{
+            com.quest.api.coach.CoachStreamControl control=call.getArgument(4);active.set(control);control.attach(closed::countDown);entered.countDown();
+            // 保持上游未返回到删除之后，验证已提交判分也不能走迟到finish/降级finish复活。
+            while(true)try{assertThat(release.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();break;}catch(InterruptedException ignored){/* 模拟上游迟到 */}
+            java.util.function.Consumer<String> sink=call.getArgument(3);sink.accept("迟到的讲解");
+            return json.readTree("{\"items\":[]}");
+        }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        UUID request=UUID.randomUUID();var input=Map.of("requestId",request,"action","answer","questionId",initial.path("currentQuestion").path("id").asText(),"keys",List.of("B"));
+        var result=mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isOk()).andReturn();
+        String preserved;
+        try{
+            assertThat(entered.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            preserved=db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session);
+            assertThat(json.readTree(preserved).path("result").path("correct").asBoolean()).isTrue();
+            mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+            assertThat(closed.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();assertThat(active.get().cancelled()).isTrue();
+            assertDeletedClaim(session,request,preserved);
+        }finally{release.countDown();result.getAsyncResult(5000);}
+        assertThat(mvc.perform(asyncDispatch(result)).andReturn().getResponse().getContentAsString()).doesNotContain("event:done","迟到的讲解");
+        assertDeletedClaim(session,request,preserved);
+    }
+    @Test void deletionBetweenClaimAndStreamRegistrationPreventsCheckpointAndModelCalls()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        long user=db.queryForObject("SELECT id FROM app_user WHERE username='alice'",Long.class);
+        var identity=users.session(Long.toString(user),db.queryForObject("SELECT id FROM auth_session WHERE user_id=?",String.class,user));
+        var input=new com.quest.api.coach.StudentCoachService.Turn(UUID.randomUUID(),"chat","不能开始",null,null);
+        var claim=com.quest.api.coach.StudentCoachService.class.getDeclaredMethod("claim",UserModels.SessionIdentity.class,String.class,com.quest.api.coach.StudentCoachService.Turn.class);claim.setAccessible(true);
+        var pending=claim.invoke(coach,identity,session.toString(),input);
+        String preserved=db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session);
+        coach.delete(identity,session.toString());
+        var control=new com.quest.api.coach.CoachStreamControl();
+        var stream=com.quest.api.coach.StudentCoachService.class.getMethod("streamTurn",UserModels.SessionIdentity.class,pending.getClass(),String.class,java.util.function.BiConsumer.class,com.quest.api.coach.CoachStreamControl.class);
+        assertThatThrownBy(()->stream.invoke(coach,identity,pending,"late-registration",(java.util.function.BiConsumer<String,JsonNode>)(event,data)->{throw new AssertionError("不应发送状态");},control))
+            .isInstanceOf(java.lang.reflect.InvocationTargetException.class).hasCauseInstanceOf(UserFailure.class);
+        assertThat(control.cancelled()).isTrue();assertThat(Thread.currentThread().isInterrupted()).isFalse();
+        assertDeletedClaim(session,input.requestId(),preserved);
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.never()).route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+    @Test void lateStreamCannotRestoreDeletedSessionAfterLeaseWasReplaced()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.when(ai.route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{entered.countDown();assertThat(release.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();return json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"\"}");});
+        streamReply("迟到的回复");UUID old=UUID.randomUUID();
+        var input=Map.of("requestId",old,"action","chat","text","旧轮次");
+        var pending=mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isOk()).andReturn();
+        String preserved;
+        try{
+            assertThat(entered.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            // 只修改本地H2模拟旧进程超过租约；新轮次完成后允许删除，旧进程仍不能回写。
+            db.update("UPDATE student_coach_turn SET created_at=? WHERE session_id=? AND request_id=?",java.time.OffsetDateTime.now().minusMinutes(10),session,old);
+            done(stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","next")));
+            mvc.perform(delete("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+            preserved=db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session);
+        }finally{release.countDown();pending.getAsyncResult(5000);}
+        String events=mvc.perform(asyncDispatch(pending)).andReturn().getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(events).doesNotContain("event:done");
+        assertThat(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo(preserved).doesNotContain("迟到的回复");
+        assertThat(db.queryForObject("SELECT deleted_at FROM student_coach_session WHERE id=?",java.time.OffsetDateTime.class,session)).isNotNull();
+        assertThat(db.queryForObject("SELECT status FROM student_coach_turn WHERE request_id=?",String.class,old)).isEqualTo("failed");
+        mvc.perform(get("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isNotFound());
+    }
     @Test void subjectRequiredAndAdminCannotUseStudentTools()throws Exception{
         String alice=token("alice");postData("/api/v1/coach/sessions",alice,Map.of("requestId",UUID.randomUUID(),"mode","practice"),409);
         mvc.perform(get("/api/v1/me/study-preference").header("Authorization","Bearer "+token("admin"))).andExpect(status().isForbidden());

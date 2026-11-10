@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { IconDelete, IconMore } from '@arco-design/web-vue/es/icon'
 import {
   createCoachApi,
   notifyError,
@@ -25,6 +26,8 @@ const session = ref<CoachSession | null>(null),
   loading = ref(false),
   error = ref(false)
 const messages = ref<HTMLElement>()
+const deleting = ref<string | null>(null)
+let listRevision = 0
 // 仅在服务端 state 确认之前展示乐观消息。
 const optimistic = ref<{ id: string; role: 'user'; text: string } | null>(null)
 // 临时文本不写入会话；done 必须整体替换为持久化结果。
@@ -78,11 +81,40 @@ function choose(id: string, keys: string[]) {
   if (id === current.value?.id && !resultOf(id)) selected.value = keys
 }
 async function list(expectedRevision = revision) {
+  const requestRevision = ++listRevision
   try {
     const value = await api.list(true)
-    if (alive && expectedRevision === revision) sessions.value = value.list
+    if (alive && expectedRevision === revision && requestRevision === listRevision)
+      sessions.value = value.list
   } catch (e) {
-    if (alive && expectedRevision === revision) notifyError(e)
+    if (alive && expectedRevision === revision && requestRevision === listRevision) notifyError(e)
+  }
+}
+function cannotDelete(id: string) {
+  return deleting.value !== null || (route.query.session === id && loading.value)
+}
+async function deleteSession(id: string) {
+  if (cannotDelete(id)) return
+  deleting.value = id
+  try {
+    await api.remove(id)
+    if (!alive) return
+    // 使删除前发出的列表响应失效，避免旧结果把已删除会话加回来。
+    listRevision++
+    const index = sessions.value.findIndex((item) => item.id === id)
+    const remaining = sessions.value.filter((item) => item.id !== id)
+    sessions.value = remaining
+    if (route.name === 'AgentView' && route.query.session === id) {
+      cancelPending()
+      const next = remaining[Math.min(Math.max(index, 0), remaining.length - 1)]
+      await router.replace({ path: '/practice/agent', query: next ? { session: next.id } : {} })
+    } else {
+      void list()
+    }
+  } catch (e) {
+    if (alive) notifyError(e)
+  } finally {
+    deleting.value = null
   }
 }
 async function load() {
@@ -92,16 +124,16 @@ async function load() {
   session.value = null
   selected.value = []
   error.value = false
-  if (typeof id !== 'string') {
-    await list()
-    return
-  }
+  // 列表与会话详情独立加载，不等待详情或整段 AI 回答。
+  void list(currentRevision)
+  if (typeof id !== 'string') return
   loading.value = true
   try {
     const value = await api.get(id, true)
     if (alive && currentRevision === revision) {
       session.value = value
       selected.value = selectionFor(value)
+      loading.value = false
       await scroll()
       // 消费一次章节首句并先移除query，刷新或缓存激活不重复发送。
       const prompt = route.query.prompt
@@ -114,7 +146,7 @@ async function load() {
         const query = { ...route.query }
         delete query.prompt
         await router.replace({ path: route.path, query })
-        if (alive && currentRevision === revision) await send('chat', prompt)
+        if (alive && currentRevision === revision) void send('chat', prompt)
       }
     }
   } catch (e) {
@@ -125,7 +157,6 @@ async function load() {
   } finally {
     if (alive && currentRevision === revision) loading.value = false
   }
-  if (alive && currentRevision === revision) await list(currentRevision)
 }
 function nearBottom() {
   const element = messages.value
@@ -213,7 +244,8 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     )
     if (isCurrent()) await list(currentRevision)
   } catch (e) {
-    if (!isCurrent()) return
+    // 删除提交会先关闭服务端流；不要把预期中断当失败再读取已删除会话。
+    if (!isCurrent() || deleting.value === id) return
     optimistic.value = null
     streaming.value = ''
     notifyError(e)
@@ -289,14 +321,38 @@ watch(
         session ? subjectLabel(session.subject) : '设置学习科目'
       }}</RouterLink>
       <nav aria-label="我的对话">
-        <RouterLink
+        <div
           v-for="item in sessions"
           :key="item.id"
-          :to="{ path: '/practice/agent', query: { session: item.id } }"
-          :class="{ 'is-current': session?.id === item.id }"
-          ><span>{{ item.title }}</span
-          ><small>{{ subjectLabel(item.subject) }}</small></RouterLink
+          class="coach-session-item"
+          :class="{ 'is-current': route.query.session === item.id }"
         >
+          <RouterLink :to="{ path: '/practice/agent', query: { session: item.id } }">
+            <span>{{ item.title }}</span>
+            <small>{{ subjectLabel(item.subject) }}</small>
+          </RouterLink>
+          <a-dropdown trigger="click" position="br" @select="deleteSession(item.id)">
+            <a-button
+              class="coach-session-menu"
+              type="text"
+              size="small"
+              :aria-label="`对话操作：${item.title}`"
+              :data-test="`session-menu-${item.id}`"
+              :loading="deleting === item.id"
+              @click.stop
+              ><template #icon><IconMore /></template
+            ></a-button>
+            <template #content>
+              <a-doption
+                value="delete"
+                class="coach-session-delete"
+                :data-test="`delete-session-${item.id}`"
+                :disabled="cannotDelete(item.id)"
+                ><template #icon><IconDelete /></template>删除</a-doption
+              >
+            </template>
+          </a-dropdown>
+        </div>
       </nav>
       <RouterLink class="text-link" to="/practice">学习空间</RouterLink>
     </aside>
@@ -367,7 +423,7 @@ watch(
           </div>
           <p v-if="busy" class="coach-thinking" role="status">知序正在思考…</p>
           <p v-if="session?.processing && !busy" class="coach-thinking">
-            上一条消息仍在处理中，请稍后重新打开会话查看结果，不要重复发送。
+            上一条消息仍在处理中。你可以稍后重新打开查看结果，或从左侧菜单删除对话并中断生成。
           </p>
         </div>
       </div>
@@ -419,6 +475,10 @@ watch(
   flex-direction: column;
   gap: 20px;
   min-height: 0;
+  overflow: hidden;
+}
+.coach-sessions > :not(nav) {
+  flex-shrink: 0;
 }
 .coach-sessions-head {
   display: flex;
@@ -437,20 +497,58 @@ watch(
 .coach-sessions nav {
   display: flex;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   flex-direction: column;
   gap: 8px;
 }
-.coach-sessions nav a {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 12px;
+.coach-session-item {
+  position: relative;
+  flex-shrink: 0;
   border-radius: 2px;
   background: var(--color-fill-1);
 }
-.coach-sessions nav a.is-current {
+.coach-session-item > a {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 38px 12px 12px;
+}
+.coach-session-item > a > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coach-session-item.is-current {
   background: rgb(var(--primary-1));
+}
+.coach-session-item.is-current > a {
   color: rgb(var(--primary-6));
+}
+.coach-session-menu {
+  position: absolute;
+  right: 4px;
+  top: 8px;
+  opacity: 0;
+  pointer-events: none;
+}
+.coach-session-item:hover .coach-session-menu,
+.coach-session-item:focus-within .coach-session-menu,
+.coach-session-menu.arco-dropdown-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.coach-session-delete,
+.coach-session-delete :deep(.arco-dropdown-option-icon) {
+  color: rgb(var(--danger-6));
+}
+@media (hover: none) {
+  .coach-session-menu {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .coach-sessions small {
   color: var(--color-text-3);
@@ -508,7 +606,9 @@ watch(
 }
 .coach-message {
   margin-bottom: 24px;
-  max-width: 76ch;
+  width: 66.6667%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .coach-message.user {
   margin-left: auto;
@@ -594,6 +694,9 @@ watch(
   clip: rect(0, 0, 0, 0);
 }
 @media (max-width: 800px) {
+  .coach-message {
+    width: 100%;
+  }
   .personal-agent {
     grid-template-columns: 1fr;
   }

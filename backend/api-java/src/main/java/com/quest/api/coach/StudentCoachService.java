@@ -35,6 +35,8 @@ public class StudentCoachService {
     private final CoachAiClient ai;
     private final String mode;
     private final com.quest.api.syllabus.SyllabusService syllabi;
+    private record ActiveStream(UUID sessionId,long userId,UUID requestId,CoachStreamControl control) {}
+    private final Set<ActiveStream> activeStreams=java.util.concurrent.ConcurrentHashMap.newKeySet();
     public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode,com.quest.api.syllabus.SyllabusService syllabi){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;this.syllabi=syllabi;}
     private JdbcTemplate db(){if(!mode.equals("postgresql")||jdbc.getIfAvailable()==null)throw unavailable();return jdbc.getObject();}
     private <T> T tx(SessionIdentity who,Supplier<T> work){
@@ -61,7 +63,7 @@ public class StudentCoachService {
         if(input==null||input.requestId()==null||!Set.of("practice","chat").contains(input.mode()))throw new IllegalArgumentException();
         return tx(who,()->{
             long user=Long.parseLong(who.user().id());db().queryForObject("SELECT id FROM app_user WHERE id=? FOR UPDATE",Long.class,user);
-            var existing=find(input.requestId(),user,false);if(existing!=null)return view(existing);
+            var existing=find(input.requestId(),user,true);if(existing!=null)return view(existing);
             // ID全局唯一，但不可用它穿透他人的会话。
             if(db().queryForObject("SELECT COUNT(*) FROM student_coach_session WHERE id=?",Integer.class,input.requestId())!=0)throw missing();
             String subject=subject(user);if(subject==null)throw new UserFailure(409,40930,"请先在个人中心选择学习科目");
@@ -74,9 +76,35 @@ public class StudentCoachService {
             return view(session);
         });
     }
-    public Map<String,Object> list(SessionIdentity who){return tx(who,()->Map.of("list",db().query("SELECT id,subject,title,updated_at FROM student_coach_session WHERE user_id=? ORDER BY updated_at DESC,id LIMIT 50",(rs,n)->Map.of("id",rs.getString("id"),"subject",rs.getString("subject"),"title",rs.getString("title"),"updatedAt",rs.getObject("updated_at",OffsetDateTime.class).toString()),Long.parseLong(who.user().id()))));}
+    public Map<String,Object> list(SessionIdentity who){return tx(who,()->Map.of("list",db().query("SELECT id,subject,title,updated_at FROM student_coach_session WHERE user_id=? AND deleted_at IS NULL ORDER BY updated_at DESC,id LIMIT 50",(rs,n)->Map.of("id",rs.getString("id"),"subject",rs.getString("subject"),"title",rs.getString("title"),"updatedAt",rs.getObject("updated_at",OffsetDateTime.class).toString()),Long.parseLong(who.user().id()))));}
     public JsonNode get(SessionIdentity who,String id){UUID key=uuid(id);return tx(who,()->view(require(key,Long.parseLong(who.user().id()),false)));}
-    private Session find(UUID id,long user,boolean lock){var rows=db().query("SELECT * FROM student_coach_session WHERE id=? AND user_id=?"+(lock?" FOR UPDATE":""),(rs,n)->new Session(id,user,rs.getString("subject"),rs.getString("title"),(ObjectNode)json.readTree(rs.getString("state_json")),rs.getObject("processing_request",UUID.class)),id,user);return rows.isEmpty()?null:rows.getFirst();}
+    /** 与认领/落库共用本人会话行锁；提交删除后才取消活动生成，旧进程残留也可直接清理。 */
+    public void delete(SessionIdentity who,String id){UUID key=uuid(id);tx(who,()->{
+        Session session=require(key,Long.parseLong(who.user().id()),true);
+        db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND status='processing'",key);
+        db().update("UPDATE student_coach_session SET processing_request=NULL,deleted_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",key,session.userId());
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){
+            @Override public void afterCommit(){
+                for(ActiveStream active:activeStreams)if(active.sessionId().equals(key)&&active.userId()==session.userId())active.control().close();
+            }
+        });
+        return null;
+    });}
+    /** 先注册再校验数据库：删除若先提交则拒绝启动，若后提交则一定能取消已注册的句柄。 */
+    private ActiveStream registerStream(SessionIdentity who,Pending pending,CoachStreamControl control){
+        Session s=pending.session();Turn input=pending.request();
+        ActiveStream active=new ActiveStream(s.id(),s.userId(),input.requestId(),control);
+        activeStreams.add(active);
+        try{
+            tx(who,()->{
+                Session live=require(s.id(),Long.parseLong(who.user().id()),true);
+                if(live.userId()!=s.userId()||!input.requestId().equals(live.processing()))throw conflict();
+                return null;
+            });
+            control.check();return active;
+        }catch(RuntimeException failure){activeStreams.remove(active);control.close();throw failure;}
+    }
+    private Session find(UUID id,long user,boolean lock){var rows=db().query("SELECT * FROM student_coach_session WHERE id=? AND user_id=? AND deleted_at IS NULL"+(lock?" FOR UPDATE":""),(rs,n)->new Session(id,user,rs.getString("subject"),rs.getString("title"),(ObjectNode)json.readTree(rs.getString("state_json")),rs.getObject("processing_request",UUID.class)),id,user);return rows.isEmpty()?null:rows.getFirst();}
     private Session require(UUID id,long user,boolean lock){var s=find(id,user,lock);if(s==null)throw missing();return s;}
     Pending claim(SessionIdentity who,String id,Turn input){
         UUID key=uuid(id);validateTurn(input);
@@ -96,10 +124,10 @@ public class StudentCoachService {
                 var times=db().query("SELECT created_at FROM student_coach_turn WHERE session_id=? AND request_id=?",(rs,n)->rs.getObject(1,OffsetDateTime.class),s.id(),s.processing());
                 if(times.isEmpty()||!times.getFirst().isBefore(OffsetDateTime.now().minusMinutes(5)))throw conflict();
                 db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",s.id(),s.processing());
-                db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND processing_request=?",s.id(),s.userId(),s.processing());
+                db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND deleted_at IS NULL AND processing_request=?",s.id(),s.userId(),s.processing());
             }
             db().update("INSERT INTO student_coach_turn(id,session_id,request_id,request_hash,status) VALUES (?,?,?,?,'processing')",UUID.randomUUID(),key,input.requestId(),requestFingerprint(input));
-            db().update("UPDATE student_coach_session SET processing_request=? WHERE id=? AND user_id=?",input.requestId(),key,s.userId());
+            db().update("UPDATE student_coach_session SET processing_request=? WHERE id=? AND user_id=? AND deleted_at IS NULL",input.requestId(),key,s.userId());
             return new Pending(new Session(s.id(),s.userId(),s.subject(),s.title(),s.state(),null),input,null);
             });
         }catch(RuntimeException failure){
@@ -160,12 +188,17 @@ public class StudentCoachService {
             JsonNode response=view(s);
             return tx(who,()->{
                 Session live=require(key,s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
-                db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",json.writeValueAsString(state),key,s.userId());
+                db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),key,s.userId());
                 db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),key,input.requestId());
                 return response;
             });
         }catch(RuntimeException failure){
-            tx(who,()->{db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",key,input.requestId());db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND processing_request=?",key,Long.parseLong(who.user().id()),input.requestId());return null;});
+            tx(who,()->{
+                Session live=find(key,Long.parseLong(who.user().id()),true);
+                if(live==null||!input.requestId().equals(live.processing()))return null;
+                db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",key,input.requestId());
+                db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND deleted_at IS NULL AND processing_request=?",key,live.userId(),input.requestId());return null;
+            });
             if(failure instanceof UserFailure userFailure)throw userFailure;
             // 只记录异常类型与traceId，不打用户消息、题干或模型输出，避免原文入日志。
             org.slf4j.LoggerFactory.getLogger(StudentCoachService.class)
@@ -177,6 +210,18 @@ public class StudentCoachService {
     public JsonNode streamTurn(SessionIdentity who,Pending pending,String traceId,
                                java.util.function.BiConsumer<String,JsonNode> emit,CoachStreamControl control){
         if(pending.replay()!=null)return pending.replay();
+        ActiveStream active=null;
+        try{
+            control.attachThread();
+            active=registerStream(who,pending,control);
+            return generateStreamTurn(who,pending,traceId,emit,control);
+        }finally{
+            if(active!=null)activeStreams.remove(active);
+            control.detachThread();
+        }
+    }
+    private JsonNode generateStreamTurn(SessionIdentity who,Pending pending,String traceId,
+                                        java.util.function.BiConsumer<String,JsonNode> emit,CoachStreamControl control){
         Session s=pending.session();Turn input=pending.request();ObjectNode state=s.state();
         String text=input.text()==null?"":input.text().strip();
         boolean graded=false,saved=false;
@@ -269,14 +314,14 @@ public class StudentCoachService {
     private void checkpoint(SessionIdentity who,Session s,Turn input){
         tx(who,()->{
             Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
-            db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",json.writeValueAsString(s.state()),s.id(),s.userId());return null;
+            db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(s.state()),s.id(),s.userId());return null;
         });
     }
     private JsonNode finish(SessionIdentity who,Session s,Turn input){
         return tx(who,()->{
             Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
             JsonNode response=view(s);
-            db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",json.writeValueAsString(s.state()),s.id(),s.userId());
+            db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(s.state()),s.id(),s.userId());
             db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),s.id(),input.requestId());return response;
         });
     }
@@ -285,10 +330,10 @@ public class StudentCoachService {
     /** 服务端善后只按已鉴权认领的 user/session/request 三元组操作，不依赖浏览器登录仍有效。 */
     private void releaseClaim(Session s,Turn input){
         new TransactionTemplate(managers.getObject()).execute(status->{
-            Session live=require(s.id(),s.userId(),true);
-            if(!input.requestId().equals(live.processing()))return null;
+            Session live=find(s.id(),s.userId(),true);
+            if(live==null||!input.requestId().equals(live.processing()))return null;
             db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",s.id(),input.requestId());
-            db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND processing_request=?",s.id(),s.userId(),input.requestId());return null;
+            db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND deleted_at IS NULL AND processing_request=?",s.id(),s.userId(),input.requestId());return null;
         });
     }
     /** 是否还有本会话未练过的已发布题：只返回布尔，不暴露题库规模。 */

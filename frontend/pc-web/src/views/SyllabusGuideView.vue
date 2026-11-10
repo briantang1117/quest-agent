@@ -64,7 +64,7 @@ async function explain(section: SyllabusCitation) {
       path: '/practice/agent',
       query: {
         session: value.id,
-        prompt: `请依据${year.value}年考纲，讲讲“${section.sectionTitle}”的考查要求，并引用对应版本与PDF第${section.pageStart}—${section.pageEnd}页。`,
+        prompt: `请结合${year.value}年考纲，讲讲“${section.sectionTitle}”主要考什么，以及我该怎么准备。`,
       },
     })
   } catch (e) {

@@ -1,9 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, type VNode } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type RouteLocationNormalizedLoaded } from 'vue-router'
 import { listenerRouteChange } from '../utils/route-listener'
 
 const route = useRoute()
+const router = useRouter()
+function pageKey(page: RouteLocationNormalizedLoaded) {
+  const ignored = page.meta.transientQueryKeys
+  if (!ignored?.length) return page.fullPath
+  // 一次性指令不属于页面身份，消费它不能销毁正在处理请求的实例。
+  const query = { ...page.query }
+  for (const key of ignored) delete query[key]
+  return router.resolve({ path: page.path, query, hash: page.hash }).fullPath
+}
 const pages = ref<{ name: string; path: string; depth: number }[]>([])
 const included = computed(() => pages.value.map((page) => page.name))
 function bindInstance(vnode: VNode) {
@@ -14,20 +23,20 @@ function bindInstance(vnode: VNode) {
     }
   })
 }
-const removeListener = listenerRouteChange(useRouter(), async ({ to }) => {
-  const path = to.fullPath
+const removeListener = listenerRouteChange(router, async ({ to }) => {
+  const path = pageKey(to)
   const depth = to.meta.pageDeepth
   const name = to.name
   const existing = pages.value.find((page) => page.path === path)
   await nextTick()
-  if (route.fullPath !== path) return
+  if (pageKey(route) !== path) return
   pages.value = pages.value.filter(
     (page) => typeof depth === 'number' && (page.depth < depth || page === existing),
   )
   if (existing || typeof depth !== 'number' || depth <= 0 || typeof name !== 'string') return
   // 先淘汰同层旧实例，再纳入新页，避免相同组件不同参数的旧缓存残留。
   await nextTick()
-  if (route.fullPath === path) pages.value.push({ name, path, depth })
+  if (pageKey(route) === path) pages.value.push({ name, path, depth })
 })
 onBeforeUnmount(removeListener)
 </script>
@@ -37,7 +46,7 @@ onBeforeUnmount(removeListener)
     <KeepAlive :include="included">
       <component
         :is="Component"
-        :key="pageRoute.fullPath"
+        :key="pageKey(pageRoute)"
         @vue:mounted="bindInstance"
         @vue:updated="bindInstance"
       />

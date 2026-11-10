@@ -41,7 +41,7 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
             path: 'agent',
             name: 'AgentView',
             component: () => import('../views/AgentView.vue'),
-            meta: { title: '个人 Agent', pageDeepth: 1 },
+            meta: { title: '个人 Agent', pageDeepth: 1, transientQueryKeys: ['prompt'] },
           },
         ],
       },

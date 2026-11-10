@@ -148,7 +148,7 @@ onMounted(() => void load())
             formatDate(record.createdAt)
           }}</template></a-table-column
         >
-        <a-table-column title="类型" :width="130"
+        <a-table-column title="类型" :width="180"
           ><template #cell="{ record }">{{ actionLabel(record.action) }}</template></a-table-column
         >
         <a-table-column title="结果" :width="90"

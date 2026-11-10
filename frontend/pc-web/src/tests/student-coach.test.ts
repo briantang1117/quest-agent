@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { DOMWrapper, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
+import { createMemoryHistory, RouterView } from 'vue-router'
+import type { Component } from 'vue'
 import ArcoVue from '@arco-design/web-vue'
 import { installErrorFeedback, useAuthStore, type CoachSession } from '@quest/shared'
 import { createAppRouter } from '../router'
@@ -85,9 +86,10 @@ function mockStream() {
   }
 }
 async function render(
-  component: typeof PracticeView,
+  component: Component,
   path: string,
   responder: (config: { url?: string; method?: string; data?: unknown }) => unknown,
+  realTeleport = false,
 ) {
   if (!vi.isMockFunction(fetch)) mockStream()
   vi.stubGlobal('matchMedia', () => ({
@@ -119,12 +121,364 @@ async function render(
   await router.push(path)
   await router.isReady()
   const wrapper = mount(component, {
-    global: { plugins: [pinia, router, ArcoVue], stubs: { teleport: true } },
+    ...(realTeleport ? { attachTo: document.body } : {}),
+    global: { plugins: [pinia, router, ArcoVue], stubs: { teleport: !realTeleport } },
   })
   wrappers.push(wrapper)
   await flushPromises()
   return { wrapper, router, request, auth }
 }
+it.each([
+  { ids: [sessionId, 'second', 'third'], target: sessionId, next: 'second' },
+  { ids: ['first', sessionId], target: sessionId, next: 'first' },
+  { ids: [sessionId], target: sessionId, next: undefined },
+  { ids: [sessionId, 'second'], target: 'second', next: sessionId },
+])('删除对话 $target 后正确选择剩余对话 $next', async ({ ids, target, next }) => {
+  let remaining = [...ids]
+  const { wrapper, router, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.method === 'DELETE') {
+        remaining = remaining.filter((id) => id !== target)
+        return null
+      }
+      if (c.url === '/api/v1/coach/sessions')
+        return {
+          list: remaining.map((id) => ({
+            id,
+            title: `对话-${id}`,
+            subject: 'vocational_aptitude',
+            updatedAt: '2026-11-10T00:00:00Z',
+          })),
+        }
+      return { ...chatSession(), id: c.url!.split('/').at(-1) }
+    },
+    true,
+  )
+  await wrapper.get(`[data-test="session-menu-${target}"]`).trigger('click')
+  await flushPromises()
+  // 打开菜单不是选择这条对话。
+  expect(router.currentRoute.value.query.session).toBe(sessionId)
+  const option = new DOMWrapper(document.body).get(`[data-test="delete-session-${target}"]`)
+  expect(option.text()).toBe('删除')
+  expect(option.find('svg').exists()).toBe(true)
+  await option.trigger('click')
+  await flushPromises()
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({ method: 'DELETE', url: `/api/v1/coach/sessions/${target}` }),
+  )
+  expect(router.currentRoute.value.query.session).toBe(next)
+  expect(wrapper.find(`[data-test="session-menu-${target}"]`).exists()).toBe(false)
+  if (!next) expect(wrapper.text()).toContain('说说你想学什么。')
+})
+
+it('历史遗留的处理中对话可删除并退出当前会话', async () => {
+  let deleted = false
+  const { wrapper, request, router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.method === 'DELETE') {
+        deleted = true
+        return null
+      }
+      return c.url === '/api/v1/coach/sessions'
+        ? {
+            list: deleted
+              ? []
+              : [
+                  {
+                    id: sessionId,
+                    title: '处理中',
+                    subject: 'vocational_aptitude',
+                    updatedAt: '2026-11-10T00:00:00Z',
+                  },
+                ],
+          }
+        : { ...chatSession(), processing: true }
+    },
+    true,
+  )
+  await wrapper.get(`[data-test="session-menu-${sessionId}"]`).trigger('click')
+  await flushPromises()
+  const option = new DOMWrapper(document.body).get(`[data-test="delete-session-${sessionId}"]`)
+  expect(option.classes()).not.toContain('arco-dropdown-option-disabled')
+  await option.trigger('click')
+  await flushPromises()
+  expect(request.mock.calls.some(([c]) => c.method === 'DELETE')).toBe(true)
+  expect(router.currentRoute.value.query.session).toBeUndefined()
+  expect(wrapper.text()).toContain('说说你想学什么。')
+})
+
+it('删除正在流式回答的对话，终止本地流并清除片段后切到下一条', async () => {
+  const stream = mockStream()
+  let deleted = false
+  const { wrapper, router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.method === 'DELETE') {
+        deleted = true
+        return null
+      }
+      if (c.url === '/api/v1/coach/sessions')
+        return {
+          list: (deleted ? ['second'] : [sessionId, 'second']).map((id) => ({
+            id,
+            title: `对话-${id}`,
+            subject: 'vocational_aptitude',
+            updatedAt: '2026-11-10T00:00:00Z',
+          })),
+        }
+      return { ...chatSession(), id: c.url!.split('/').at(-1) }
+    },
+    true,
+  )
+  await wrapper.get('#coach-input textarea').setValue('删除前的提问')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  stream.event('delta', { text: '旧回答片段' })
+  await flushPromises()
+  expect(wrapper.text()).toContain('旧回答片段')
+  const signal = stream.fetcher.mock.calls[0]![1]!.signal!
+  await wrapper.get(`[data-test="session-menu-${sessionId}"]`).trigger('click')
+  await flushPromises()
+  await new DOMWrapper(document.body)
+    .get(`[data-test="delete-session-${sessionId}"]`)
+    .trigger('click')
+  await flushPromises()
+  expect(signal.aborted).toBe(true)
+  expect(router.currentRoute.value.query.session).toBe('second')
+  expect(stream.cancel).toHaveBeenCalledTimes(1)
+  expect(wrapper.text()).not.toContain('旧回答片段')
+  expect(wrapper.get('.coach-messages').text()).toContain('这是关于概念的说明。')
+  expect(wrapper.find('.coach-thinking').exists()).toBe(false)
+})
+
+it('删除请求未返回时服务端先断流，不再读取即将删除的会话', async () => {
+  const stream = mockStream()
+  let resolveDelete!: () => void
+  const deletion = new Promise<void>((resolve) => {
+    resolveDelete = resolve
+  })
+  let deleted = false
+  const { wrapper, router, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.method === 'DELETE')
+        return deletion.then(() => {
+          deleted = true
+          return null
+        })
+      if (c.url === '/api/v1/coach/sessions')
+        return {
+          list: deleted
+            ? []
+            : [
+                {
+                  id: sessionId,
+                  title: '待删除',
+                  subject: 'vocational_aptitude',
+                  updatedAt: '2026-11-10T00:00:00Z',
+                },
+              ],
+        }
+      return chatSession()
+    },
+    true,
+  )
+  await wrapper.get('#coach-input textarea').setValue('测试删除竞态')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  await wrapper.get(`[data-test="session-menu-${sessionId}"]`).trigger('click')
+  await flushPromises()
+  await new DOMWrapper(document.body)
+    .get(`[data-test="delete-session-${sessionId}"]`)
+    .trigger('click')
+  const readsBeforeClose = request.mock.calls.filter(
+    ([c]) => c.url === `/api/v1/coach/sessions/${sessionId}` && c.method === 'GET',
+  ).length
+  try {
+    stream.close()
+    await flushPromises()
+    const readsAfterClose = request.mock.calls.filter(
+      ([c]) => c.url === `/api/v1/coach/sessions/${sessionId}` && c.method === 'GET',
+    ).length
+    expect(readsAfterClose).toBe(readsBeforeClose)
+  } finally {
+    resolveDelete()
+    await flushPromises()
+  }
+  expect(router.currentRoute.value.query.session).toBeUndefined()
+})
+
+it('删除失败保留当前对话和列表，不自动跳转', async () => {
+  const { wrapper, router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.method === 'DELETE') throw new Error('合成删除失败')
+      return c.url === '/api/v1/coach/sessions'
+        ? {
+            list: [
+              {
+                id: sessionId,
+                title: '保留的对话',
+                subject: 'vocational_aptitude',
+                updatedAt: '2026-11-10T00:00:00Z',
+              },
+            ],
+          }
+        : chatSession()
+    },
+    true,
+  )
+  await wrapper.get(`[data-test="session-menu-${sessionId}"]`).trigger('click')
+  await flushPromises()
+  await new DOMWrapper(document.body)
+    .get(`[data-test="delete-session-${sessionId}"]`)
+    .trigger('click')
+  await flushPromises()
+  expect(router.currentRoute.value.query.session).toBe(sessionId)
+  expect(wrapper.get('.coach-sessions nav').text()).toContain('保留的对话')
+  expect(wrapper.get('.coach-messages').text()).toContain('这是关于概念的说明。')
+})
+
+it('经真实布局从考纲进入对话，消费首句后仍展示用户消息与流式回答', async () => {
+  const stream = mockStream()
+  const versionId = '22222222-2222-2222-2222-222222222222'
+  const empty: CoachSession = {
+    ...chatSession(),
+    messages: [],
+    syllabusVersionId: versionId,
+  }
+  const { wrapper, router } = await render(RouterView, '/practice/syllabus', (c) => {
+    if (c.url?.endsWith('study-preference'))
+      return { subject: 'vocational_aptitude', examYear: 2027 }
+    if (c.url === '/api/v1/study/syllabus')
+      return {
+        versionId,
+        examYear: 2027,
+        title: '合成考纲',
+        versionLabel: '2027版',
+        sections: [
+          {
+            versionId,
+            title: '合成考纲',
+            examYear: 2027,
+            sectionTitle: '判断推理',
+            pageStart: 2,
+            pageEnd: 3,
+            text: '测查逻辑分析能力',
+          },
+        ],
+      }
+    if (c.url === '/api/v1/coach/sessions')
+      return c.method === 'POST'
+        ? empty
+        : {
+            list: [
+              {
+                id: sessionId,
+                subject: empty.subject,
+                title: '考纲学习对话',
+                updatedAt: '2026-11-10T00:00:00Z',
+              },
+            ],
+          }
+    if (c.url === `/api/v1/coach/sessions/${sessionId}`) return empty
+    throw new Error(`未预期请求：${c.method} ${c.url}`)
+  })
+  await vi.waitFor(() =>
+    expect(wrapper.find('[data-test="explain-syllabus-section"]').exists()).toBe(true),
+  )
+  await wrapper.get('[data-test="explain-syllabus-section"]').trigger('click')
+  await vi.waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(1))
+  await flushPromises()
+  const prompt = '请结合2027年考纲，讲讲“判断推理”主要考什么，以及我该怎么准备。'
+  expect(router.currentRoute.value.query.prompt).toBeUndefined()
+  expect(wrapper.get('.coach-messages').text()).toContain(prompt)
+  // SSE 保持未完成时，历史加载已结束，左侧列表也应独立显示。
+  expect(wrapper.find('.coach-loading-veil').exists()).toBe(false)
+  expect(wrapper.get('.coach-sessions nav').text()).toContain('考纲学习对话')
+  expect(wrapper.get('.coach-thinking').text()).toBe('知序正在思考…')
+  const agent = wrapper.findComponent(AgentView).element
+  const persisted: CoachSession = {
+    ...empty,
+    processing: true,
+    messages: [{ id: 'user-1', role: 'user', text: prompt }],
+  }
+  stream.event('state', persisted)
+  stream.event('delta', { text: '判断推理重点考查逻辑分析能力。' })
+  await flushPromises()
+  expect(wrapper.findComponent(AgentView).element).toBe(agent)
+  expect(wrapper.get('.coach-messages').text()).toContain(prompt)
+  expect(wrapper.get('.is-streaming').text()).toContain('判断推理重点考查逻辑分析能力。')
+  stream.event('done', {
+    ...persisted,
+    processing: false,
+    messages: [
+      ...persisted.messages,
+      { id: 'assistant-1', role: 'assistant', text: '考纲讲解已完成。' },
+    ],
+  })
+  stream.close()
+  await flushPromises()
+  expect(wrapper.get('.coach-messages').text()).toContain('考纲讲解已完成。')
+  expect(wrapper.find('.is-streaming').exists()).toBe(false)
+  expect(wrapper.find('.coach-thinking').exists()).toBe(false)
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+})
+
+it('会话详情尚未返回时，左侧列表仍能独立显示', async () => {
+  let resolveDetail!: (value: CoachSession) => void
+  const detail = new Promise<CoachSession>((resolve) => {
+    resolveDetail = resolve
+  })
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions'
+      ? {
+          list: [
+            {
+              id: sessionId,
+              subject: 'vocational_aptitude',
+              title: '已有学习对话',
+              updatedAt: '2026-11-10T00:00:00Z',
+            },
+          ],
+        }
+      : detail,
+  )
+  try {
+    expect(wrapper.get('.coach-sessions nav').text()).toContain('已有学习对话')
+    expect(wrapper.find('.coach-loading-veil').exists()).toBe(true)
+  } finally {
+    resolveDetail(chatSession())
+    await flushPromises()
+  }
+  expect(wrapper.find('.coach-loading-veil').exists()).toBe(false)
+  expect(wrapper.get('.coach-messages').text()).toContain('这是关于概念的说明。')
+})
+
+it('真实布局仅忽略一次性prompt，切换session仍更换Agent实例', async () => {
+  const { wrapper, router } = await render(
+    RouterView,
+    `/practice/agent?session=${sessionId}&prompt=`,
+    (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession()),
+  )
+  await vi.waitFor(() => expect(wrapper.findComponent(AgentView).exists()).toBe(true))
+  await flushPromises()
+  const agent = wrapper.findComponent(AgentView).element
+  await router.replace({ path: '/practice/agent', query: { session: sessionId } })
+  await flushPromises()
+  expect(wrapper.findComponent(AgentView).element).toBe(agent)
+  await router.push({ path: '/practice/agent', query: { session: 'another-session' } })
+  await flushPromises()
+  expect(wrapper.findComponent(AgentView).element).not.toBe(agent)
+})
+
 it('考纲章节首句只发送一次并消费query，刷新不重发', async () => {
   const stream = mockStream()
   const { router } = await render(

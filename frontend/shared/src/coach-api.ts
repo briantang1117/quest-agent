@@ -95,6 +95,11 @@ export function createCoachApi(auth: Pick<ReturnType<typeof useAuthStore>, 'requ
         method: 'GET',
         url: `/api/v1/coach/sessions/${encodeURIComponent(id)}`,
       }),
+    remove: (id: string) =>
+      auth.request<null>({
+        method: 'DELETE',
+        url: `/api/v1/coach/sessions/${encodeURIComponent(id)}`,
+      }),
     turn: (id: string, data: CoachTurn) =>
       auth.request<CoachSession>({
         method: 'POST',
