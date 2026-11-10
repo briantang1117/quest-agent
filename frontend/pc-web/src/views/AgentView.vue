@@ -4,6 +4,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { IconDelete, IconMore } from '@arco-design/web-vue/es/icon'
 import {
   createCoachApi,
+  createMaterialsApi,
+  isActiveMaterial,
+  type Material,
   notifyError,
   streamTurn,
   subjectLabel,
@@ -14,6 +17,8 @@ import {
 } from '@quest/shared'
 import SafeMarkdown from '../components/SafeMarkdown.vue'
 import CoachQuestionCard from '../components/CoachQuestionCard.vue'
+import MaterialCard from '../components/MaterialCard.vue'
+import { useMaterialPolling } from '../composables/material-polling'
 const auth = useAuthStore(),
   api = createCoachApi(auth),
   route = useRoute(),
@@ -25,6 +30,48 @@ const session = ref<CoachSession | null>(null),
   busy = ref(false),
   loading = ref(false),
   error = ref(false)
+const materialApi = createMaterialsApi(auth)
+const materials = ref<Material[]>([]),
+  materialBusy = ref(false)
+const orderedMaterials = computed(() =>
+  [...materials.value].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  ),
+)
+function updateMaterial(value: Material) {
+  const index = materials.value.findIndex((item) => item.id === value.id)
+  if (index < 0) materials.value.push(value)
+  else materials.value[index] = value
+}
+const { paused: materialPaused, resume: resumeMaterials } = useMaterialPolling(
+  () => materials.value,
+  updateMaterial,
+)
+async function createMaterial() {
+  if (
+    materialBusy.value ||
+    !session.value ||
+    loading.value ||
+    busy.value ||
+    session.value.processing ||
+    materials.value.some(isActiveMaterial)
+  )
+    return
+  const version = revision,
+    id = session.value.id
+  materialBusy.value = true
+  try {
+    const value = await materialApi.create(id, { requestId: crypto.randomUUID() })
+    if (!alive || version !== revision) return
+    updateMaterial(value)
+    resumeMaterials()
+    void scroll(version)
+  } catch (cause) {
+    if (alive && version === revision) notifyError(cause)
+  } finally {
+    if (alive && version === revision) materialBusy.value = false
+  }
+}
 const messages = ref<HTMLElement>()
 const deleting = ref<string | null>(null)
 let listRevision = 0
@@ -36,6 +83,9 @@ let alive = true,
   revision = 0
 let active: { requestId: string; controller: AbortController } | null = null
 function cancelPending() {
+  materials.value = []
+  materialBusy.value = false
+  resumeMaterials()
   revision++
   active?.controller.abort()
   active = null
@@ -132,6 +182,7 @@ async function load() {
     const value = await api.get(id, true)
     if (alive && currentRevision === revision) {
       session.value = value
+      materials.value = value.materials ?? []
       selected.value = selectionFor(value)
       loading.value = false
       await scroll()
@@ -208,6 +259,16 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     if (!isCurrent()) return
     const follow = nearBottom()
     session.value = value
+    // 普通轮次快照可能早于资料轮询；不让旧状态覆盖已经完成的卡片。
+    for (const item of value.materials ?? []) {
+      const existing = materials.value.find((material) => material.id === item.id)
+      if (
+        !existing ||
+        item.updatedAt > existing.updatedAt ||
+        (item.updatedAt === existing.updatedAt && isActiveMaterial(existing))
+      )
+        updateMaterial(item)
+    }
     optimistic.value = null
     selected.value = selectionFor(value)
     confirmed = true
@@ -261,6 +322,10 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
         )
           confirmed = true
         session.value = value
+        for (const item of value.materials ?? []) {
+          const existing = materials.value.find((material) => material.id === item.id)
+          if (!existing || item.updatedAt > existing.updatedAt) updateMaterial(item)
+        }
         selected.value = selectionFor(value)
       } catch (recoveryError) {
         if (isCurrent()) notifyError(recoveryError)
@@ -362,7 +427,14 @@ watch(
           <h1>{{ session?.title || '你的学习对话' }}</h1>
           <span>{{ session ? subjectLabel(session.subject) : '答疑与练习，在同一段对话中' }}</span>
         </div>
-        <a-tag v-if="session" color="cyan">已发布题库</a-tag>
+        <a-button
+          v-if="session"
+          data-test="create-material"
+          :loading="materialBusy"
+          :disabled="loading || busy || session.processing || materials.some(isActiveMaterial)"
+          @click="createMaterial"
+          >整理学习资料</a-button
+        >
       </header>
       <div class="coach-loading" :aria-busy="loading">
         <div v-if="loading" class="coach-loading-veil" role="status">正在加载对话…</div>
@@ -394,6 +466,17 @@ watch(
               @submit="send('answer')"
             />
           </article>
+          <div v-if="orderedMaterials.length" class="coach-materials" aria-label="对话学习资料">
+            <MaterialCard
+              v-for="material in orderedMaterials"
+              :key="material.id"
+              :material="material"
+              @update="updateMaterial"
+            />
+            <a-button v-if="materialPaused" size="small" @click="resumeMaterials"
+              >刷新资料状态</a-button
+            >
+          </div>
           <!-- 服务端确认前先显示自己的消息，所有动作都立即反馈。 -->
           <article v-if="optimistic" class="coach-message user is-pending">
             <span class="message-speaker">我</span>
@@ -603,6 +686,11 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+.coach-materials {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 24px;
 }
 .coach-message {
   margin-bottom: 24px;

@@ -56,7 +56,18 @@ async def authenticate(request: Request, settings: Settings, nonces: NonceStore)
         token.encode(),
         settings.internal_service_token.get_secret_value().encode(),
     )
-    raw_body = await request.body()
+    if request.url.path == "/internal/material-generate":
+        # 资料请求在签名计算前有界读取，兼容没有 Content-Length 的分块请求。
+        blocks, size = [], 0
+        async for block in request.stream():
+            size += len(block)
+            if size > settings.material_max_input_bytes:
+                raise ServiceError(413, 41301, "资料请求超过大小上限，请缩小范围")
+            blocks.append(block)
+        raw_body = b"".join(blocks)
+        request._body = raw_body
+    else:
+        raw_body = await request.body()
     message = "\n".join(
         (
             timestamp,

@@ -43,7 +43,47 @@ function options(fetcher: typeof fetch) {
   }
 }
 
+const material = {
+  id: 'material-1',
+  sessionId: session.id,
+  sourceTitle: '答疑',
+  sourceDeleted: false,
+  subject: 'vocational_aptitude',
+  title: '学习资料',
+  status: 'queued',
+  format: 'markdown',
+  createdAt: '2026-11-10T00:00:00Z',
+  updatedAt: '2026-11-10T00:00:00Z',
+  error: null,
+}
+
 describe('coach turn stream', () => {
+  it('接受可选资料卡且不混入messages', async () => {
+    const value = { ...session, materials: [material] }
+    const callbacks = options(fetchEvents([['done', value]]))
+    await streamTurn(session.id, turn, callbacks)
+    expect(callbacks.onDone).toHaveBeenCalledWith(value)
+    expect(value.messages).toEqual([])
+  })
+  it.each([
+    null,
+    {},
+    [null],
+    [{}],
+    [{ ...material, status: 'complete' }],
+    [{ ...material, sourceDeleted: 'false' }],
+    [{ ...material, format: 'pdf' }],
+    [{ ...material, subject: 'unknown' }],
+    [{ ...material, error: 1 }],
+    [{ ...material, markdown: 1 }],
+    [{ ...material, createdAt: null }],
+    [{ ...material, sessionId: 1 }],
+    [{ ...material, title: null }],
+  ])('拒绝畸形可选materials %j', async (materials) => {
+    const callbacks = options(fetchEvents([['done', { ...session, materials }]]))
+    await expect(streamTurn(session.id, turn, callbacks)).rejects.toThrow('无效的陪练会话事件')
+    expect(callbacks.onDone).not.toHaveBeenCalled()
+  })
   it('一次 POST CoachTurn，分发完整 state/delta/reset/done，done 不解 envelope', async () => {
     const state = { ...session, processing: true }
     const fetcher = fetchEvents([

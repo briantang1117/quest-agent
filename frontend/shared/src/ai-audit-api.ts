@@ -25,6 +25,7 @@ export interface AiCallDetail {
 }
 export const AI_ACTIONS = [
   { value: 'ai.coach_turn', label: '陪练对话' },
+  { value: 'ai.material_generate', label: '学习资料整理' },
   { value: 'ai.public_import', label: '题目解析' },
   { value: 'ai.pdf_inspect', label: 'PDF 预检' },
 ]

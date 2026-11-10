@@ -1,5 +1,1 @@
-spring:
-  autoconfigure:
-    exclude:
-      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
-      - org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration
+# Worker 仅通过 HMAC API 操作任务，不初始化业务数据库或迁移。

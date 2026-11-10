@@ -1,10 +1,5 @@
+# Worker 无业务数据库凭据需求；保留显式关闭迁移作为部署安全约束。
 spring:
-  datasource:
-    url: ${SPRING_DATASOURCE_URL}
-    username: ${SPRING_DATASOURCE_USERNAME}
-    password: ${SPRING_DATASOURCE_PASSWORD}
-    hikari:
-      initialization-fail-timeout: 10000
-  # API owns migrations. Worker must never receive the owner/migration credentials.
   flyway:
     enabled: false
+# 资料 MQ 由 QUEST_MATERIAL_MQ_ENABLED 单独控制，不能启用旧 OUTBOX_ENABLED。

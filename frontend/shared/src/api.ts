@@ -42,10 +42,13 @@ export function createApiClient(options: { baseURL: string; getToken?: () => str
       const response = await transport.request<unknown>(config)
       if (config.responseType === 'blob' && response.data instanceof Blob) {
         const contentType = String(response.headers['content-type'] ?? response.data.type)
+          .split(';')[0]!
+          .trim()
+          .toLowerCase()
         if (
           response.status >= 200 &&
           response.status < 300 &&
-          contentType.includes('application/pdf')
+          ['application/pdf', 'text/markdown'].includes(contentType)
         )
           return response.data as T
         const data: unknown = JSON.parse(await response.data.text())

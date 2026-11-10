@@ -20,6 +20,8 @@ public class PublicAiClient {
     private final ObjectMapper json;
     private final String base,token,secret;
     private final com.quest.api.coach.AiCallAudit audit;
+    @Value("${quest.materials.ai-timeout:PT650S}")
+    private String materialTimeout="PT650S";
     // 内部 Uvicorn 仅提供 HTTP/1.1，禁止默认 h2c Upgrade 探测。
     private final HttpClient http=HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build();
     public PublicAiClient(ObjectMapper json,@Value("${AI_SERVICE_URL:http://127.0.0.1:8000}") String base,
@@ -36,6 +38,30 @@ public class PublicAiClient {
     public JsonNode reviewSyllabus(String examType,JsonNode sections) { return post("/internal/syllabus-review",Map.of("scope","admin","examType",examType,"sections",sections),512*1024,null); }
     public JsonNode embedSyllabus(List<String> texts,String scope) { return post("/internal/syllabus-embed",Map.of("scope",scope,"texts",texts),4*1024*1024,null); }
     public JsonNode inspectSyllabus(byte[] pdf) { return post("/internal/syllabus-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),6*1024*1024,null); }
+    /** 私人资料采用独立长预算，审计仅记录摘要，不暴露整份私人上下文。 */
+    public JsonNode generateMaterial(Object payload,Caller caller){
+        long started=System.nanoTime();Throwable failure=null;JsonNode result=null;
+        Duration timeout=org.springframework.boot.convert.DurationStyle.detectAndParse(materialTimeout);
+        var control=new com.quest.api.coach.CoachStreamControl();
+        // 资料总截止时间覆盖响应头和完整响应体；只关闭本次连接，不中断复用线程。
+        var deadline=DEADLINES.schedule(control::close,timeout.toNanos(),java.util.concurrent.TimeUnit.NANOSECONDS);
+        try{
+            result=doPost("/internal/material-generate",payload,1024*1024,caller,"ai.material_generate",started,timeout,control);
+            control.check();return result;
+        }
+        catch(RuntimeException error){
+            var reported=control.cancelled()||System.nanoTime()-started>=timeout.toNanos()
+                ?new UserFailure(504,50401,"模型整理超时，未自动重试"):error;
+            failure=reported;throw reported;
+        }
+        finally{
+            deadline.cancel(false);
+            control.close();
+            var input=json.createObjectNode().put("bytes",json.writeValueAsBytes(payload).length).put("sha256",com.quest.api.materials.MaterialDigest.of(json.writeValueAsBytes(payload)));
+            var output=json.createObjectNode();if(result!=null){byte[] raw=json.writeValueAsBytes(result);output.put("bytes",raw.length).put("sha256",com.quest.api.materials.MaterialDigest.of(raw));}
+            audit.record(caller==null?null:caller.actor(),"ai.material_generate",null,caller==null?null:caller.traceId(),input,output,failure,elapsed(started),1,null);
+        }
+    }
     private JsonNode post(String path,Object payload,int maxResponse){return post(path,payload,maxResponse,null);}
     private static final java.util.concurrent.ScheduledExecutorService DEADLINES=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"coach-stream-deadline");t.setDaemon(true);return t;});
     /** 有界读取内部 SSE，截止时间覆盖响应头及响应体；任何出口都记录一次审计。 */
@@ -113,6 +139,9 @@ public class PublicAiClient {
         return doPost(path,payload,maxResponse,caller,action,started,path.startsWith("/internal/syllabus-review")?BACKGROUND_TIMEOUT:Duration.ofSeconds(100));
     }
     private JsonNode doPost(String path,Object payload,int maxResponse,Caller caller,String action,long started,Duration timeout) {
+        return doPost(path,payload,maxResponse,caller,action,started,timeout,null);
+    }
+    private JsonNode doPost(String path,Object payload,int maxResponse,Caller caller,String action,long started,Duration timeout,com.quest.api.coach.CoachStreamControl control) {
         if(token.isBlank() || secret.length()<32)throw new UserFailure(503,50321,"内部AI服务未配置");
         try {
             URI root=URI.create(base);
@@ -127,7 +156,11 @@ public class PublicAiClient {
             // 无应用级自动重试；故障不回显上游响应/URL/签名。
             var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
             byte[] raw;
-            try(var stream=response.body()){raw=stream.readNBytes(maxResponse+1);}
+            try(var stream=response.body()){
+                if(control!=null)control.attach(stream);
+                raw=stream.readNBytes(maxResponse+1);
+                if(control!=null)control.check();
+            }finally{if(control!=null)control.detach();}
             if(raw.length>maxResponse)throw new IllegalStateException();
             // 非 200 时把上游业务码带出来，不能统一吞成一句话，否则无法定位。
             JsonNode envelope=json.readTree(raw);
@@ -137,7 +170,7 @@ public class PublicAiClient {
             }
             if(!envelope.path("code").isIntegralNumber() || envelope.path("code").asInt()!=0 || !envelope.path("data").isObject())throw new IllegalStateException();
             JsonNode data=envelope.get("data");
-            audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
+            if(!action.equals("ai.material_generate"))audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
             return data;
         } catch(InterruptedException failure){Thread.currentThread().interrupt();throw new UserFailure(503,50322,"AI处理已中断，未自动重试");}
         // UserFailure 已带明确原因（例如上游业务码），不能被下面兜底覆盖成通用文案。

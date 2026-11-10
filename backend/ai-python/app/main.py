@@ -9,6 +9,7 @@ from app.agent.candidate_graph import build_candidate_graph
 from app.agent.coach_graph import build_coach_graph
 from app.agent.extraction_graph import build_extraction_graph
 from app.api.coach import router as coach_router
+from app.api.materials import router as materials_router
 from app.api.pdf_import import router as pdf_import_router
 from app.api.public_import import router as public_import_router
 from app.api.routes import router
@@ -82,6 +83,7 @@ def create_app(
         redirect_slashes=False,
     )
     nonces = NonceStore()
+    application.state.settings = config
     application.state.provider = None
     application.state.embedding_provider = None
     application.state.extraction_graph = None
@@ -122,6 +124,7 @@ def create_app(
 
     application.include_router(router)
     application.include_router(coach_router)
+    application.include_router(materials_router)
     application.include_router(public_import_router)
     application.include_router(pdf_import_router)
     application.include_router(syllabus_router)

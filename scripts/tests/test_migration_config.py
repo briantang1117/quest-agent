@@ -92,10 +92,20 @@ class MigrationConfigTests(unittest.TestCase):
         self.assertEqual(statements, 'ALTER TABLE student_coach_session ADD COLUMN '
                          'deleted_at TIMESTAMP WITH TIME ZONE;')
 
+    def test_v13_materials_target_and_sql_copies(self):
+        with patch.object(migrate, 'service_environment', return_value={}):
+            env = migrate.migration_environment(Path('/local/test'), target='13')
+        self.assertEqual(env['SPRING_FLYWAY_TARGET'], '13')
+        self.assertEqual(env['QUEST_PUBLIC_IMPORT_ENABLED'], 'false')
+        root = SCRIPTS.parent
+        name = 'V13__learning_materials.sql'
+        sql = (root / 'deploy/migrations' / name).read_text()
+        self.assertEqual(sql, (root / 'backend/api-java/src/main/resources/db/migration' / name).read_text())
+
     def test_unknown_target_is_rejected_before_reading_credentials(self):
         with patch.object(migrate, 'service_environment') as load:
             with self.assertRaises(ValueError):
-                migrate.migration_environment(Path('/local/test'), target='13')
+                migrate.migration_environment(Path('/local/test'), target='14')
             load.assert_not_called()
 
 

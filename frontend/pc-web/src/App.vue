@@ -23,6 +23,7 @@ const workspaceLinks = computed(() =>
     : [
         { label: '学习工作区', to: '/practice' },
         { label: '个人 Agent', to: '/practice/agent' },
+        { label: '学习资料', to: '/practice/materials' },
         { label: '个人中心', to: '/practice/profile' },
       ],
 )

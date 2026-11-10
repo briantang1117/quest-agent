@@ -91,6 +91,33 @@ describe('全局反馈', () => {
   })
 })
 
+describe('学习资料错误反馈', () => {
+  it.each([
+    [41340, 413, '对话超出整理预算，请缩小整理范围后再试'],
+    [50341, 503, '学习资料生成尚未启用，请联系管理员'],
+    [40940, 409, '资料任务状态已变化，请刷新后操作'],
+    [40440, 404, '学习资料或来源对话不存在或已被移除'],
+    [50340, 503, '学习资料存储暂不可用，请稍后再试'],
+    [50342, 503, '学习资料处理容量已满，请稍后再试'],
+  ])('业务码 %i 对 HTTP 与无HTTP状态的SSE均使用固定中文且去重', (code, status, message) => {
+    const show = vi.fn()
+    cleanup = installErrorFeedback(show)
+    for (const httpStatus of [status, undefined]) {
+      const error = new ApiError('raw-secret-数据库密码', code, 'private-trace', httpStatus)
+      expect(errorMessage(error)).toBe(message)
+      notifyError(error)
+      notifyError(error)
+    }
+    expect(show).toHaveBeenCalledTimes(2)
+    expect(show.mock.calls.map(([feedback]) => feedback)).toEqual([
+      { kind: 'message', message, title: undefined },
+      { kind: 'message', message, title: undefined },
+    ])
+    expect(JSON.stringify(show.mock.calls)).not.toContain('raw-secret')
+    expect(JSON.stringify(show.mock.calls)).not.toContain('private-trace')
+  })
+})
+
 describe('安全的错误文案', () => {
   it('普通403使用友好中文，不包含上游文案或traceId', () => {
     expect(errorMessage(new ApiError('Access denied', 40300, 'secret-trace', 403))).toBe(

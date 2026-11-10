@@ -35,9 +35,10 @@ public class StudentCoachService {
     private final CoachAiClient ai;
     private final String mode;
     private final com.quest.api.syllabus.SyllabusService syllabi;
+    private final com.quest.api.materials.LearningMaterialService materials;
     private record ActiveStream(UUID sessionId,long userId,UUID requestId,CoachStreamControl control) {}
     private final Set<ActiveStream> activeStreams=java.util.concurrent.ConcurrentHashMap.newKeySet();
-    public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode,com.quest.api.syllabus.SyllabusService syllabi){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;this.syllabi=syllabi;}
+    public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode,com.quest.api.syllabus.SyllabusService syllabi,com.quest.api.materials.LearningMaterialService materials){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;this.syllabi=syllabi;this.materials=materials;}
     private JdbcTemplate db(){if(!mode.equals("postgresql")||jdbc.getIfAvailable()==null)throw unavailable();return jdbc.getObject();}
     private <T> T tx(SessionIdentity who,Supplier<T> work){
         db();var manager=managers.getIfAvailable();if(manager==null)throw unavailable();
@@ -151,12 +152,16 @@ public class StudentCoachService {
             if(action.equals("chat")){
                 JsonNode intent=ai.turn(context(s,text),who.user().id(),traceId);
                 action=intent.path("action").asText();
-                if(!Set.of("next","answer","chat","clarify").contains(action))throw unavailable();
+                if(!Set.of("next","answer","chat","clarify","material").contains(action))throw unavailable();
                 if(action.equals("answer")){
                     keys=new ArrayList<>();for(JsonNode k:intent.path("keys"))keys.add(k.asText());
                     // 自然语言识别先展示待确认选择，不直接替用户提交。
                     state.set("suggestedKeys",json.valueToTree(keys));
                     message(state,"assistant","你是要提交 "+String.join("、",keys)+" 吗？请在题目卡片确认选项后提交。");
+                } else if(action.equals("material")){
+                    checkpoint(who,s,input);
+                    materials.create(who,id,new com.quest.api.materials.LearningMaterialService.Create(input.requestId(),text),state.withArray("messages").get(state.withArray("messages").size()-1).path("id").asText());
+                    message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true);
                 } else if(action.equals("next"))nextQuestion(s);
                 // 纯答疑场景也可能想接着练：模型给文案，能否"下一题"由 Java 状态决定。
                 else suggestions(message(state,"assistant",safeReply(intent)),intent.path("suggestions"),false,hasRemaining(s));
@@ -241,13 +246,18 @@ public class StudentCoachService {
                 stage="route";
                 JsonNode intent=ai.route(context(s,text),who.user().id(),traceId);
                 control.check();action=intent.path("action").asText();
-                if(!Set.of("next","answer","chat","clarify").contains(action))throw unavailable();
+                if(!Set.of("next","answer","chat","clarify","material").contains(action))throw unavailable();
                 if(action.equals("answer")){
                     if(!state.hasNonNull("current")||state.hasNonNull("result"))throw conflict();
                     List<String> keys=new ArrayList<>();for(JsonNode k:intent.path("keys"))keys.add(k.asText());
                     validateSelection(state.path("current").path("snapshot"),keys);
                     state.set("suggestedKeys",json.valueToTree(keys));
                     assistant=message(state,"assistant","你是要提交 "+String.join("、",keys)+" 吗？请在题目卡片确认选项后提交。");
+                }else if(action.equals("material")){
+                    stage="material";
+                    materials.create(who,s.id().toString(),new com.quest.api.materials.LearningMaterialService.Create(input.requestId(),text),state.withArray("messages").get(state.withArray("messages").size()-1).path("id").asText());
+                    stage="material-created";
+                    assistant=message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。");assistant.put("materialNotice",true);
                 }else if(action.equals("clarify")){
                     assistant=message(state,"assistant",safeReply(intent));
                     suggestions(assistant,intent.path("suggestions"),false,canAdvance(s));
@@ -276,6 +286,15 @@ public class StudentCoachService {
             // 不把半截回复当完整消息；已判分则保存降级提示并完成本轮，避免再次判分/计费。
             boolean interrupted=Thread.interrupted();
             try{
+                if(stage.equals("material")){
+                    message(state,"assistant","学习资料整理任务创建失败，未自动重试；请检查提示后重新发送整理请求。").put("materialNotice",true);
+                    tx(who,()->{
+                        Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
+                        db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),s.id(),s.userId());
+                        db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",s.id(),input.requestId());return null;
+                    });
+                    throw failure;
+                }
                 if(graded){
                     if(assistant!=null)state.withArray("messages").remove(state.withArray("messages").size()-1);
                     assistant=message(state,"assistant","AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。");
@@ -363,7 +382,7 @@ public class StudentCoachService {
     private JsonNode view(Session s){
         ObjectNode response=json.createObjectNode();response.put("id",s.id().toString());response.put("subject",s.subject());response.put("title",s.title());response.set("examYear",s.state().has("examYear")?s.state().get("examYear"):json.nullNode());response.set("syllabusVersionId",s.state().has("syllabusVersionId")?s.state().get("syllabusVersionId"):json.nullNode());response.set("messages",s.state().path("messages").deepCopy());
         response.set("currentQuestion",s.state().hasNonNull("current")?visibleQuestion(s.state().get("current")):json.nullNode());response.set("result",s.state().path("result").isMissingNode()?json.nullNode():s.state().get("result").deepCopy());
-        response.set("suggestedKeys",s.state().path("suggestedKeys").isMissingNode()?json.createArrayNode():s.state().get("suggestedKeys"));response.put("processing",s.processing()!=null);return response;
+        response.set("suggestedKeys",s.state().path("suggestedKeys").isMissingNode()?json.createArrayNode():s.state().get("suggestedKeys"));response.put("processing",s.processing()!=null);response.set("materials",json.valueToTree(materials.sessionMaterials(s.userId(),s.id())));return response;
     }
     private ObjectNode message(ObjectNode state,String role,String text){ArrayNode messages=state.withArray("messages");ObjectNode item=messages.addObject();item.put("id",UUID.randomUUID().toString());item.put("role",role);item.put("text",text);if(messages.size()>100)messages.remove(0);return item;}
     /**

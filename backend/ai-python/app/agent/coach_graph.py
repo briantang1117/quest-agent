@@ -25,6 +25,14 @@ SYLLABUS_PROMPT = (
 )
 
 
+MATERIAL_INTENT_PROMPT = (
+    "明确要求把本次对话整理为学习资料/复习材料时action为material，不生成完整讲解，"
+    "仅给简短确认，交由Java创建任务，不调用额外explain。"
+    "否定（不要整理）、询问功能（能整理吗/如何整理）或引用他人的整理命令不执行，按chat回答；"
+    "不能仅凭关键词触发，含糊意图先clarify。material的keys必须为空，不声称文件已保存。"
+)
+
+
 class Suggestion(BaseModel):
     """快捷建议：模型只给文案与意图，是否可用由 Java 的权威状态把关。"""
 
@@ -38,7 +46,7 @@ class CoachReply(BaseModel):
     # 只取 action/keys/reply/suggestions：模型偶尔多回 correct、answer_keys 之类的元信息，
     # 这类多余字段不该让整轮陪练失败（真实故障率约一半），但也不能被当成答案采用。
     model_config = ConfigDict(extra="ignore")
-    action: Literal["next", "answer", "chat", "clarify"]
+    action: Literal["next", "answer", "chat", "clarify", "material"]
     keys: list[Literal["A", "B", "C", "D", "E", "F", "G", "H"]] = Field(max_length=8)
     reply: str = Field(min_length=1, max_length=6000)
     suggestions: list[dict] = Field(default_factory=list, max_length=4)
@@ -88,7 +96,8 @@ def build_coach_graph(provider: LLMProvider):
                         "action只能是next或chat；label不超过20字，chat时text为用户将要发送的话。"
                         "建议要贴合当前场景：纯答疑时不要硬推下一题；已判分且有新题时可给next。"
                         "建议只是候选，是否可用由Java判定。"
-                        "回复JSON，包含action(next/answer/chat/clarify)、keys(仅answer时非空)、reply、suggestions。"
+                        "回复JSON，包含action(next/answer/chat/clarify/material)、keys(仅answer时非空)、reply、suggestions。"
+                        + MATERIAL_INTENT_PROMPT
                         + SYLLABUS_PROMPT
                     ),
                 },

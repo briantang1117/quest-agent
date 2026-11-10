@@ -9,5 +9,16 @@ spring:
     web-application-type: none
     keep-alive: true
 quest:
+  # 旧通用 Outbox 尚未实现，不能作为资料任务的启动开关。
   outbox:
     enabled: ${OUTBOX_ENABLED:false}
+  material-mq:
+    # Topic 和真实消息验收须另获授权；默认完全不初始化 MQ/HTTP 客户端。
+    enabled: ${QUEST_MATERIAL_MQ_ENABLED:false}
+    api-service-url: ${QUEST_API_SERVICE_URL:http://127.0.0.1:8080}
+    name-server: ${ROCKETMQ_NAME_SERVER:}
+    service-token: ${INTERNAL_SERVICE_TOKEN:}
+    hmac-secret: ${INTERNAL_HMAC_SECRET:}
+    # 固定契约：quest-learning-materials / generate
+    # producerGroup=quest-material-publisher，consumerGroup=quest-material-worker。
+    # Worker 不连接业务数据库；API 完成持久化认领和 ACK。

@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agent import coach_search
-from app.agent.coach_graph import SYLLABUS_PROMPT, CoachReply, Suggestion
+from app.agent.coach_graph import MATERIAL_INTENT_PROMPT, SYLLABUS_PROMPT, CoachReply, Suggestion
 from app.core.errors import ServiceError, envelope
 from app.llm.json_reply_stream import JsonReplyStream
 
@@ -181,9 +181,10 @@ async def coach_route(payload: CoachRequest, request: Request):
         "仅做短 JSON 意图识别，不生成完整讲解。"
         "开始练习/下一题为next；明确提交选项为answer；知识提问/闲聊为chat；含糊作答为clarify。"
         "不能把假设、引用、排除选项或‘为什么不选A’当作提交，需澄清。"
-        "输出JSON {action:next|answer|chat|clarify,keys:[],"
+        "输出JSON {action:next|answer|chat|clarify|material,keys:[],"
         "reply:简短确认或澄清文案,suggestions:[]}。"
-        "keys仅answer时非空且不重复；reply最多200字，不讲解、不判分，suggestions留空。",
+        "keys仅answer时非空且不重复；reply最多200字，不讲解、不判分，suggestions留空。"
+        + MATERIAL_INTENT_PROMPT,
     )
     try:
         content = await provider.generate_json(messages)

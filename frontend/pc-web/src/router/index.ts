@@ -32,6 +32,12 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
             meta: { title: '考纲导览', pageDeepth: 1 },
           },
           {
+            path: 'materials',
+            name: 'LearningMaterialsView',
+            component: () => import('../views/LearningMaterialsView.vue'),
+            meta: { title: '学习资料', pageDeepth: 1 },
+          },
+          {
             path: 'profile',
             name: 'ProfileView',
             component: () => import('../views/ProfileView.vue'),

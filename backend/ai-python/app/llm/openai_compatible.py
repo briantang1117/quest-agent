@@ -1,6 +1,8 @@
+import asyncio
 import codecs
 import json
 import logging
+from contextlib import aclosing
 
 import httpx
 
@@ -88,23 +90,60 @@ class OpenAICompatibleProvider:
         self, messages: list[dict[str, str]], *, json_mode: bool = False, long_form: bool = False
     ):
         """有界正文流；仅 stop、非空正文及 [DONE] 三者齐备才成功，不重试。"""
+        max_tokens = (
+            self._settings.explanation_max_tokens if long_form else self._settings.llm_max_tokens
+        )
+        async with aclosing(
+            self._stream_completion(messages, json_mode=json_mode, max_tokens=max_tokens)
+        ) as stream:
+            async for chunk in stream:
+                yield chunk
+
+    async def generate_material(self, messages: list[dict[str, str]]) -> str:
+        """资料专用长流聚合；整次调用超时，不重试、不返回半截正文。"""
+        request_body = self._completion_body(
+            messages, json_mode=True, max_tokens=self._settings.material_max_output_tokens
+        )
+        if len(json.dumps(request_body, ensure_ascii=False).encode("utf-8")) > (
+            self._settings.material_max_input_bytes
+        ):
+            raise ServiceError(413, 41301, "资料模型请求超过大小上限，请缩小范围")
+        try:
+            async with asyncio.timeout(self._settings.material_llm_timeout_seconds):
+                async with aclosing(
+                    self._stream_completion(
+                        messages,
+                        json_mode=True,
+                        max_tokens=self._settings.material_max_output_tokens,
+                        content_limit=1024 * 1024,
+                        request_timeout=self._settings.material_llm_timeout_seconds,
+                    )
+                ) as stream:
+                    return "".join([chunk async for chunk in stream])
+        except TimeoutError as exc:
+            raise ServiceError(504, 50401, "LLM upstream timed out") from exc
+
+    def _completion_body(self, messages, *, json_mode, max_tokens):
         body = {
             "model": self._settings.llm_model,
             "messages": messages,
             "temperature": self._settings.llm_temperature,
-            "max_tokens": (
-                self._settings.explanation_max_tokens
-                if long_form
-                else self._settings.llm_max_tokens
-            ),
+            "max_tokens": max_tokens,
             "stream": True,
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}
+        return body
+
+    async def _stream_completion(
+        self, messages, *, json_mode, max_tokens, content_limit=64 * 1024, request_timeout=None
+    ):
+        body = self._completion_body(messages, json_mode=json_mode, max_tokens=max_tokens)
+        options = {} if request_timeout is None else {"timeout": request_timeout}
         stopped, nonempty, content_size = False, False, 0
         try:
             async with self._client.stream(
-                "POST", f"{self._settings.llm_base_url}/chat/completions", json=body
+                "POST", f"{self._settings.llm_base_url}/chat/completions", json=body, **options
             ) as response:
                 response.raise_for_status()
                 async for payload in _sse_payloads(response):
@@ -148,7 +187,7 @@ class OpenAICompatibleProvider:
                         stopped = True
                     if text:
                         content_size += len(text.encode("utf-8"))
-                        if content_size > 64 * 1024:
+                        if content_size > content_limit:
                             raise ValueError("completion too large")
                         nonempty = nonempty or bool(text.strip())
                         yield text

@@ -14,6 +14,12 @@ const student: UserProfile = {
 }
 const admin = { ...student, role: 'admin' as const }
 describe('授权路由策略', () => {
+  it('学习资料仅学员可达且next保持精确白名单', () => {
+    expect(authRedirect(student, '/practice/materials')).toBeNull()
+    expect(safeNext(student, '/practice/materials')).toBe('/practice/materials')
+    expect(authRedirect(admin, '/practice/materials')).toBe('/admin/users')
+    expect(safeNext(student, '/practice/materials/other')).toBe('/practice')
+  })
   it('未登录去login并保留站内next', () => {
     expect(authRedirect(null, '/practice/agent')).toEqual({
       path: '/login',

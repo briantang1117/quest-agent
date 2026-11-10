@@ -1,5 +1,6 @@
 import type { useAuthStore } from './auth'
 import { streamPost } from './sse'
+import { isMaterial, type Material } from './materials-api'
 export type StudySubject = 'vocational_aptitude' | 'administrative_aptitude'
 export const STUDY_SUBJECTS = [
   { value: 'vocational_aptitude' as const, label: '事业编 A 类 · 职测' },
@@ -44,6 +45,7 @@ export interface CoachSession {
   examYear?: number | null
   syllabusVersionId?: string | null
   messages: CoachMessage[]
+  materials?: Material[]
   currentQuestion: CoachQuestion | null
   result: CoachResult | null
   suggestedKeys: string[]
@@ -168,6 +170,8 @@ function isSession(value: unknown): value is CoachSession {
     STUDY_SUBJECTS.some((item) => item.value === value.subject) &&
     typeof value.processing === 'boolean' &&
     strings(value.suggestedKeys) &&
+    (value.materials === undefined ||
+      (Array.isArray(value.materials) && value.materials.every(isMaterial))) &&
     (value.currentQuestion === null || isQuestion(value.currentQuestion)) &&
     (value.result === null || isResult(value.result)) &&
     Array.isArray(value.messages) &&

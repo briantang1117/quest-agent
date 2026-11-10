@@ -21,7 +21,13 @@ function allowed(user: UserProfile, path: string) {
         /^\/admin\/(?:questions|banks|syllabi)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
           path,
         )
-      : ['/practice', '/practice/agent', '/practice/profile', '/practice/syllabus'].includes(path))
+      : [
+          '/practice',
+          '/practice/agent',
+          '/practice/profile',
+          '/practice/syllabus',
+          '/practice/materials',
+        ].includes(path))
   )
 }
 // next采用精确白名单，不解析或归一化潜在的外部地址/编码路径。

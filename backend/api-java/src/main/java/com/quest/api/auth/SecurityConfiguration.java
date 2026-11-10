@@ -45,13 +45,16 @@ public class SecurityConfiguration {
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(JwtValidators.createDefaultWithIssuer(issuer), claims));
         return decoder;
     }
-    @Bean SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper mapper, UserService users) throws Exception {
+    @Bean SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper mapper, UserService users,
+            @Value("${INTERNAL_SERVICE_TOKEN:}") String internalToken,@Value("${INTERNAL_HMAC_SECRET:}") String internalSecret) throws Exception {
         return http.csrf(csrf -> csrf.disable()).formLogin(form -> form.disable()).httpBasic(basic -> basic.disable())
             .requestCache(cache -> cache.disable()).sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth.requestMatchers(HttpMethod.GET, "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness").permitAll()
-                // No internal service endpoint is exposed until HMAC + replay protection exists.
+                // 仅这三个精确POST由前置HMAC过滤器验证，其余内部接口仍默认拒绝。
+                .requestMatchers(HttpMethod.POST, com.quest.api.materials.MaterialInternalFilter.PATHS.toArray(String[]::new)).permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                 .requestMatchers("/internal/**", "/api/v1/internal/**").denyAll().anyRequest().authenticated())
+            .addFilterBefore(new com.quest.api.materials.MaterialInternalFilter(internalToken,internalSecret,mapper), org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter.class)
             .addFilterAfter(new SessionSecurityFilter(users, mapper), org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter.class)
             .exceptionHandling(errors -> errors.authenticationEntryPoint((req, res, ex) -> writeError(mapper, req, res, 401, 40100, "Authentication required"))
                 .accessDeniedHandler((req, res, ex) -> writeError(mapper, req, res, 403, 40300, "Access denied")))

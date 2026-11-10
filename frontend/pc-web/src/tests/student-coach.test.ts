@@ -18,6 +18,7 @@ afterEach(async () => {
   await flushPromises()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 const sessionId = '11111111-1111-1111-1111-111111111111'
 const question = {
@@ -128,6 +129,119 @@ async function render(
   await flushPromises()
   return { wrapper, router, request, auth }
 }
+const material = {
+  id: 'material-1',
+  sessionId,
+  sourceTitle: '互动刷题',
+  sourceDeleted: false,
+  subject: 'vocational_aptitude' as const,
+  title: '学习资料',
+  status: 'queued' as const,
+  format: 'markdown' as const,
+  createdAt: '2026-11-10T00:00:00Z',
+  updatedAt: '2026-11-10T00:00:00Z',
+  error: null,
+}
+it('整理按钮防重复创建，立即显示排队卡且不占聊天busy', async () => {
+  let resolve!: (value: unknown) => void
+  const pending = new Promise((done) => {
+    resolve = done
+  })
+  const { wrapper, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.method === 'POST') return pending
+      if (c.url === '/api/v1/coach/sessions') return { list: [] }
+      return chatSession()
+    },
+  )
+  const button = wrapper.get('[data-test="create-material"]')
+  await button.trigger('click')
+  await button.trigger('click')
+  expect(request.mock.calls.filter(([c]) => c.method === 'POST')).toHaveLength(1)
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      url: `/api/v1/coach/sessions/${sessionId}/materials`,
+      data: { requestId: expect.any(String) },
+    }),
+  )
+  resolve(material)
+  await flushPromises()
+  expect(wrapper.text()).toContain('排队中')
+  expect(wrapper.findAll('.coach-message')).toHaveLength(1)
+  expect(wrapper.get('#coach-input').attributes('disabled')).toBeUndefined()
+  expect(wrapper.text()).not.toContain('知序正在思考')
+})
+it('自然语言保持chat，后端done资料卡独立轮询到ready且不刷新会话', async () => {
+  vi.useFakeTimers()
+  const stream = mockStream()
+  const { wrapper, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.url === '/api/v1/study/materials/material-1')
+        return { ...material, status: 'ready', title: '方法总结' }
+      return c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession()
+    },
+  )
+  await wrapper.get('textarea').setValue('请把对话整理成复习材料')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(JSON.parse(stream.fetcher.mock.calls[0]![1]!.body as string).action).toBe('chat')
+  stream.event('done', { ...chatSession(), materials: [material] })
+  stream.close()
+  await flushPromises()
+  expect(wrapper.text()).toContain('排队中')
+  await vi.advanceTimersByTimeAsync(3000)
+  await flushPromises()
+  expect(wrapper.text()).toContain('方法总结')
+  expect(wrapper.text()).toContain('已完成')
+  expect(
+    request.mock.calls.filter(([c]) => c.url === `/api/v1/coach/sessions/${sessionId}`),
+  ).toHaveLength(1)
+  const count = request.mock.calls.length
+  await vi.advanceTimersByTimeAsync(12000)
+  expect(request).toHaveBeenCalledTimes(count)
+})
+it('活动资料在切换会话或卸载后停止轮询且不接收旧结果', async () => {
+  vi.useFakeTimers()
+  let resolve!: (value: unknown) => void
+  const pending = new Promise((done) => {
+    resolve = done
+  })
+  const { wrapper, request, router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.url?.startsWith('/api/v1/study/materials/')) return pending
+      if (c.url === '/api/v1/coach/sessions') return { list: [] }
+      return {
+        ...chatSession(),
+        id: c.url!.split('/').at(-1),
+        materials: c.url!.endsWith(sessionId) ? [material] : [],
+      }
+    },
+  )
+  await vi.advanceTimersByTimeAsync(3000)
+  const pollCall = request.mock.calls.find(([c]) => c.url === '/api/v1/study/materials/material-1')
+  expect(pollCall).toBeDefined()
+  expect(pollCall![0].signal?.aborted).toBe(false)
+  await router.push('/practice/agent?session=other')
+  await flushPromises()
+  expect(pollCall![0].signal?.aborted).toBe(true)
+  resolve({ ...material, status: 'ready', title: '旧结果' })
+  await flushPromises()
+  expect(wrapper.text()).not.toContain('旧结果')
+  const count = request.mock.calls.length
+  await vi.advanceTimersByTimeAsync(9000)
+  expect(request).toHaveBeenCalledTimes(count)
+  wrappers.splice(wrappers.indexOf(wrapper), 1)
+  wrapper.unmount()
+  await vi.advanceTimersByTimeAsync(9000)
+  expect(request).toHaveBeenCalledTimes(count)
+})
+
 it.each([
   { ids: [sessionId, 'second', 'third'], target: sessionId, next: 'second' },
   { ids: ['first', sessionId], target: sessionId, next: 'first' },

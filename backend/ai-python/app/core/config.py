@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=4096, ge=1, le=32768)
     # 讲解类回答（多主体对比、长解析）容易撞4096上限被截断；单独给更高预算。
     explanation_max_tokens: int = Field(default=8192, ge=1, le=32768)
+    # 资料整理独立预算，不放大普通聊天的上下文和等待时间。
+    material_max_input_chars: int = Field(default=1_000_000, gt=0)
+    material_max_input_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
+    material_max_output_chars: int = Field(default=100_000, gt=0, le=100_000)
+    material_max_output_tokens: int = Field(default=32768, ge=1, le=32768)
+    material_llm_timeout_seconds: float = Field(default=600, gt=0, le=600)
 
     @model_validator(mode="before")
     @classmethod
