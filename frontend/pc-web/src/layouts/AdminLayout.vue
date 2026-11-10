@@ -20,12 +20,26 @@ const cacheScope = useCacheScope()
 const auth = useAuthStore()
 const router = useRouter()
 const route = useRoute()
+const syllabusSection = computed(
+  () => route.path === '/admin/syllabi' || route.path.startsWith('/admin/syllabi/'),
+)
 const contentSection = computed(
-  () => route.path.startsWith('/admin/banks') || route.path.startsWith('/admin/questions/'),
+  () =>
+    route.path.startsWith('/admin/banks') ||
+    route.path.startsWith('/admin/questions/') ||
+    syllabusSection.value,
 )
 // 系统日志挂在"系统管理"下，与用户管理同级，但不复用用户管理的选中态。
 const systemSection = computed(() => route.path.startsWith('/admin/logs'))
 const breadcrumbs = computed(() => {
+  if (syllabusSection.value) {
+    const items: { label: string; to?: string }[] = [
+      { label: '内容管理' },
+      { label: '考纲管理', to: '/admin/syllabi' },
+    ]
+    if (route.name === 'AdminSyllabusDetailView') items.push({ label: '考纲详情' })
+    return items
+  }
   // 系统日志与用户管理并列，同属系统管理一级。
   if (systemSection.value) return [{ label: '系统管理' }, { label: '系统日志' }]
   if (!contentSection.value)
@@ -53,10 +67,11 @@ const breadcrumbBackTo = computed(
 )
 const openKeys = ref<string[]>([])
 watch(
-  [contentSection, systemSection],
-  ([isContent, isSystem]) => {
-    // 内容管理只有一组；系统管理下用户与日志并列，展开当前所在那一组即可。
-    openKeys.value = [isContent ? 'question-banks' : isSystem ? 'system-logs' : 'accounts']
+  [contentSection, systemSection, syllabusSection],
+  ([isContent, isSystem, isSyllabus]) => {
+    openKeys.value = [
+      isSyllabus ? 'syllabi' : isContent ? 'question-banks' : isSystem ? 'system-logs' : 'accounts',
+    ]
   },
   { immediate: true },
 )
@@ -141,16 +156,32 @@ async function logout() {
       <a-menu
         v-model:open-keys="openKeys"
         :collapsed="collapsed"
-        :selected-keys="[contentSection ? 'banks' : systemSection ? 'logs' : 'users']"
+        :selected-keys="[
+          syllabusSection
+            ? 'syllabus-list'
+            : contentSection
+              ? 'banks'
+              : systemSection
+                ? 'logs'
+                : 'users',
+        ]"
         :auto-open-selected="true"
         :level-indent="34"
       >
-        <a-sub-menu v-if="contentSection" key="question-banks"
-          ><template #icon><IconBook /></template><template #title>题库管理</template
-          ><a-menu-item key="banks" @click="router.push('/admin/banks')"
-            >公共题库</a-menu-item
-          ></a-sub-menu
-        >
+        <template v-if="contentSection">
+          <a-sub-menu key="question-banks"
+            ><template #icon><IconBook /></template><template #title>题库管理</template
+            ><a-menu-item key="banks" @click="router.push('/admin/banks')"
+              >公共题库</a-menu-item
+            ></a-sub-menu
+          >
+          <a-sub-menu key="syllabi"
+            ><template #icon><IconFile /></template><template #title>考纲管理</template
+            ><a-menu-item key="syllabus-list" @click="router.push('/admin/syllabi')"
+              >考纲列表</a-menu-item
+            ></a-sub-menu
+          >
+        </template>
         <!-- 系统管理下并列两组：用户管理、系统日志，不互相替换。 -->
         <template v-else>
           <a-sub-menu key="accounts"

@@ -43,4 +43,63 @@ class PublicAiClientTest {
             assertThat(calls.get()).isEqualTo(2);
         } finally {server.stop(0);}
     }
+    @Test void streamRequiresDoneAndAuditsFailureAndSuccessExactlyOnce()throws Exception{
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        var calls=new AtomicInteger();var json=new ObjectMapper();
+        var audit=org.mockito.Mockito.mock(com.quest.api.coach.AiCallAudit.class);
+        server.createContext("/internal/coach-explain",exchange->{
+            try{
+                exchange.getRequestBody().readAllBytes();int n=calls.incrementAndGet();
+                String stream="event: delta\ndata: {\"text\":\"讲解\"}\n\n";
+                if(n==2)stream+="event: suggestions\ndata: {\"items\":[]}\n\nevent: done\ndata: {}\n\n";
+                byte[] bytes=stream.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type","text/event-stream");exchange.sendResponseHeaders(200,bytes.length);
+                exchange.getResponseBody().write(bytes);exchange.close();
+            }catch(Exception failure){throw new RuntimeException(failure);}
+        });server.start();
+        try{
+            var client=new PublicAiClient(json,"http://127.0.0.1:"+server.getAddress().getPort(),"token","secret-secret-secret-secret-secret",audit);
+            var caller=new PublicAiClient.Caller(1L,"test-stream");
+            assertThatThrownBy(()->client.coachExplain(java.util.Map.of("scope","student"),caller,x->{},new com.quest.api.coach.CoachStreamControl())).isInstanceOf(UserFailure.class);
+            assertThat(client.coachExplain(java.util.Map.of("scope","student"),caller,x->{},new com.quest.api.coach.CoachStreamControl()).path("items").isArray()).isTrue();
+            var responses=org.mockito.ArgumentCaptor.forClass(tools.jackson.databind.JsonNode.class);
+            var failures=org.mockito.ArgumentCaptor.forClass(Throwable.class);
+            org.mockito.Mockito.verify(audit,org.mockito.Mockito.times(2)).record(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("ai.coach_explain"),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.eq("test-stream"),org.mockito.ArgumentMatchers.any(),responses.capture(),failures.capture(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.eq(1),org.mockito.ArgumentMatchers.isNull());
+            assertThat(failures.getAllValues().get(0)).isNotNull();assertThat(failures.getAllValues().get(1)).isNull();
+            assertThat(responses.getAllValues().get(1).path("reply").asText()).isEqualTo("讲解");
+            assertThat(calls.get()).isEqualTo(2);
+        }finally{server.stop(0);}
+    }
+    @Test void realUvicornAcceptsJavaRouteAndStreamWithoutUpgradeFailures()throws Exception{
+        var root=java.nio.file.Path.of(System.getProperty("user.dir")).toAbsolutePath();
+        while(!java.nio.file.Files.isDirectory(root.resolve("backend/ai-python")))root=root.getParent();
+        var python=root.resolve("backend/ai-python/.venv/bin/python");
+        org.junit.jupiter.api.Assumptions.assumeTrue(java.nio.file.Files.isExecutable(python),"跨语言测试需要本地Python虚拟环境");
+        int port;try(var probe=new java.net.ServerSocket(0,1,java.net.InetAddress.getLoopbackAddress())){port=probe.getLocalPort();}
+        var log=java.nio.file.Files.createTempFile("quest-uvicorn-local-",".log");
+        var process=new ProcessBuilder(python.toString(),root.resolve("backend/ai-python/tests/local_coach_server.py").toString(),String.valueOf(port))
+            .directory(root.resolve("backend/ai-python").toFile()).redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try{
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(15);boolean ready=false;
+            while(System.nanoTime()<deadline&&process.isAlive()){
+                try(var socket=new java.net.Socket("127.0.0.1",port)){ready=true;break;}catch(java.io.IOException ignored){Thread.sleep(50);}
+            }
+            assertThat(ready).as(java.nio.file.Files.readString(log)).isTrue();
+            var client=new PublicAiClient(new ObjectMapper(),"http://127.0.0.1:"+port,"test-token-for-internal-service-123456","test-hmac-secret-at-least-32-characters",audit());
+            var payload=java.util.Map.of("scope","student","subject","vocational_aptitude","message","邯郸学步是什么意思","history",java.util.List.of());
+            assertThat(client.coachRoute(payload,new PublicAiClient.Caller(1L,"local")).path("action").asText()).isEqualTo("chat");
+            var text=new StringBuilder();
+            client.coachExplain(payload,new PublicAiClient.Caller(1L,"local"),text::append,new com.quest.api.coach.CoachStreamControl());
+            assertThat(text.toString()).isEqualTo("邯郸学步比喻盲目模仿。");
+            assertThat(java.nio.file.Files.readString(log)).doesNotContain("Unsupported upgrade request");
+        }finally{process.destroy();if(!process.waitFor(5,java.util.concurrent.TimeUnit.SECONDS))process.destroyForcibly();java.nio.file.Files.deleteIfExists(log);}
+    }
+    @Test void streamConnectionFailureStillWritesAudit()throws Exception{
+        var audit=org.mockito.Mockito.mock(com.quest.api.coach.AiCallAudit.class);
+        int port;try(var probe=new java.net.ServerSocket(0,1,java.net.InetAddress.getLoopbackAddress())){port=probe.getLocalPort();}
+        var client=new PublicAiClient(new ObjectMapper(),"http://127.0.0.1:"+port,"token","secret-secret-secret-secret-secret",audit);
+        assertThatThrownBy(()->client.coachExplain(java.util.Map.of(),new PublicAiClient.Caller(1L,"t"),x->{},new com.quest.api.coach.CoachStreamControl())).isInstanceOf(UserFailure.class);
+        org.mockito.Mockito.verify(audit).record(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("ai.coach_explain"),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.eq("t"),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.notNull(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.eq(1),org.mockito.ArgumentMatchers.isNull());
+    }
+
 }

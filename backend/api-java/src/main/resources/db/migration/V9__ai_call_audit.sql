@@ -13,7 +13,7 @@ CREATE TABLE ai_call_exchange (
     -- 响应侧：模型原始输出，失败时保存已被拒绝的原文，便于复现校验问题
     response_text TEXT,
     model VARCHAR(128),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_ai_exchange_audit ON ai_call_exchange(audit_id);
 CREATE INDEX idx_ai_exchange_created ON ai_call_exchange(created_at DESC);

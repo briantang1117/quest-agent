@@ -19,7 +19,7 @@ class Provider:
         self.question = question
         self.calls = []
 
-    async def generate_json(self, messages):
+    async def generate_json(self, messages, *, background=False):
         self.calls.append(copy.deepcopy(messages))
         return json.dumps({"questions": [self.question]})
 
@@ -63,7 +63,7 @@ def test_unavailable_source_option_or_type_mismatch_blocks_draft(question):
 
 def test_candidate_with_multiple_extracted_questions_is_not_silently_merged(question):
     class Multiple(Provider):
-        async def generate_json(self, messages):
+        async def generate_json(self, messages, *, background=False):
             return json.dumps({"questions": [self.question, self.question]})
 
     state = process(Multiple(question), candidate())
@@ -178,7 +178,7 @@ def test_unnumbered_candidate_keeps_evidence_references(question):
 
 def test_search_provenance_survives_question_count_rejection(question):
     class Multiple(Provider):
-        async def generate_json(self, messages):
+        async def generate_json(self, messages, *, background=False):
             return json.dumps({"questions": [self.question, self.question]})
 
     state = process(Multiple(question), candidate(()), search=Search())

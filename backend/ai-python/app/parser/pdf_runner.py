@@ -92,7 +92,8 @@ def _watch_rss(process, stop, exceeded):
             return
 
 
-def run_pdf_inspection(raw: bytes) -> dict:
+def run_pdf_worker(raw: bytes, worker_script: Path) -> bytes:
+    """共用有界传输和看门狗；调用方还必须严格验证各自的输出协议。"""
     if not raw or len(raw) > MAX_PDF_BYTES:
         raise PdfRunnerError("invalid_pdf")
     try:
@@ -100,8 +101,8 @@ def run_pdf_inspection(raw: bytes) -> dict:
         # 文件在退出时删除，不保存原PDF，不把路径或stderr送回调用方。
         with tempfile.TemporaryFile() as output:
             process = subprocess.Popen(
-                [sys.executable, "-I", str(WORKER_SCRIPT)],
-                cwd=WORKER_SCRIPT.parent,
+                [sys.executable, "-I", str(worker_script)],
+                cwd=worker_script.parent,
                 env={"LANG": "C.UTF-8"},
                 stdin=subprocess.PIPE,
                 stdout=output,
@@ -138,7 +139,16 @@ def run_pdf_inspection(raw: bytes) -> dict:
                 raise PdfRunnerError("output_limit")
             if process.returncode != 0:
                 raise PdfRunnerError("invalid_pdf")
-        result = _Result.model_validate(json.loads(serialized))
+        return serialized
+    except PdfRunnerError:
+        raise
+    except (OSError, ValueError, TypeError):
+        raise PdfRunnerError("worker_failed") from None
+
+
+def run_pdf_inspection(raw: bytes) -> dict:
+    try:
+        result = _Result.model_validate(json.loads(run_pdf_worker(raw, WORKER_SCRIPT)))
         if result.sha256 != hashlib.sha256(raw).hexdigest():
             raise PdfRunnerError("worker_failed")
         return result.model_dump()

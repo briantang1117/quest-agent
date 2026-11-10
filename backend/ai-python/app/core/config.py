@@ -30,9 +30,13 @@ class Settings(BaseSettings):
     fetch_api_key: SecretStr | None = None
     # 必须根据接口实际输出核实，不能从模型名猜测或默认沿用数据库1024维。
     embedding_dimensions: int | None = Field(default=None, gt=0, strict=True)
+    # 对话单轮用较短超时；后台批处理（考纲整份整理/向量化）另用长超时，不强行套用对话预算。
     llm_timeout_seconds: float = Field(default=30, gt=0, le=300)
+    background_llm_timeout_seconds: float = Field(default=180, gt=0, le=600)
     llm_temperature: float = Field(default=0, ge=0, le=2)
     llm_max_tokens: int = Field(default=4096, ge=1, le=32768)
+    # 讲解类回答（多主体对比、长解析）容易撞4096上限被截断；单独给更高预算。
+    explanation_max_tokens: int = Field(default=8192, ge=1, le=32768)
 
     @model_validator(mode="before")
     @classmethod
@@ -74,6 +78,10 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.isascii() and value.isdecimal():
             return int(value)
         return value
+
+    @property
+    def background_timeout(self) -> float:
+        return max(self.llm_timeout_seconds, self.background_llm_timeout_seconds)
 
     @field_validator("internal_service_token", "internal_hmac_secret", "llm_api_key")
     @classmethod

@@ -3,15 +3,18 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import ArcoVue from '@arco-design/web-vue'
-import { useAuthStore } from '@quest/shared'
+import { installErrorFeedback, useAuthStore, type CoachSession } from '@quest/shared'
 import { createAppRouter } from '../router'
 import PracticeView from '../views/PracticeView.vue'
 import ProfileView from '../views/ProfileView.vue'
 import AgentView from '../views/AgentView.vue'
 
 const wrappers: VueWrapper[] = []
-afterEach(() => {
+afterEach(async () => {
   wrappers.splice(0).forEach((w) => w.unmount())
+  // 取消的fetch和已提交导航要先收尾，再销毁jsdom及恢复认证替身。
+  await flushPromises()
+  await flushPromises()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -25,8 +28,23 @@ const question = {
     { key: 'B', textMd: '乙' },
   ],
 }
+// 纯答疑会话：最后一条带后端 chat 建议。
+function chatSession(): CoachSession {
+  return {
+    ...session(),
+    currentQuestion: null,
+    messages: [
+      {
+        id: 'm1',
+        role: 'assistant',
+        text: '这是关于概念的说明。',
+        suggestions: [{ action: 'chat', label: '再讲讲', text: '再讲讲这个知识点' }],
+      },
+    ],
+  }
+}
 // 与后端一致：题目挂在出题的那条消息上，currentQuestion 只是会话级索引。
-function session() {
+function session(): CoachSession {
   return {
     id: sessionId,
     subject: 'vocational_aptitude',
@@ -38,11 +56,40 @@ function session() {
     processing: false,
   }
 }
+function mockStream() {
+  let controller: ReadableStreamDefaultController<Uint8Array>
+  const cancel = vi.fn()
+  const body = new ReadableStream<Uint8Array>({
+    start(value) {
+      controller = value
+    },
+    cancel,
+  })
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+    new Response(body, {
+      headers: { 'Content-Type': 'text/event-stream' },
+    }),
+  )
+  vi.stubGlobal('fetch', fetcher)
+  return {
+    fetcher,
+    cancel,
+    event(name: string, data: unknown) {
+      controller.enqueue(
+        new TextEncoder().encode(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`),
+      )
+    },
+    close() {
+      controller.close()
+    },
+  }
+}
 async function render(
   component: typeof PracticeView,
   path: string,
   responder: (config: { url?: string; method?: string; data?: unknown }) => unknown,
 ) {
+  if (!vi.isMockFunction(fetch)) mockStream()
   vi.stubGlobal('matchMedia', () => ({
     matches: false,
     addListener() {},
@@ -76,8 +123,94 @@ async function render(
   })
   wrappers.push(wrapper)
   await flushPromises()
-  return { wrapper, router, request }
+  return { wrapper, router, request, auth }
 }
+it('考纲章节首句只发送一次并消费query，刷新不重发', async () => {
+  const stream = mockStream()
+  const { router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}&prompt=${encodeURIComponent('请讲讲判断推理的考查要求')}`,
+    (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : session()),
+  )
+  await vi.waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(1))
+  expect(router.currentRoute.value.query.prompt).toBeUndefined()
+  expect(JSON.parse(stream.fetcher.mock.calls[0][1]!.body as string).text).toBe(
+    '请讲讲判断推理的考查要求',
+  )
+  stream.event('done', session())
+  await flushPromises()
+  await router.replace({ path: '/practice/agent', query: { session: sessionId } })
+  await flushPromises()
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+})
+
+it('章节首句发送后清理query不会中断本次请求', async () => {
+  const stream = mockStream()
+  const { wrapper } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}&prompt=${encodeURIComponent('请讲讲判断推理的考查要求')}`,
+    (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : session()),
+  )
+  await vi.waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(1))
+  // 清理query会触发路由watch；不能因此abort刚发出的SSE。
+  await flushPromises()
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+  stream.event('delta', { text: '判断推理' })
+  await flushPromises()
+  expect(wrapper.text()).toContain('判断推理')
+  expect(stream.cancel).not.toHaveBeenCalled()
+})
+
+it('用户中途离开页面时让后端继续完成，不把回答打断成失败', async () => {
+  const stream = mockStream()
+  const { wrapper } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}&prompt=${encodeURIComponent('请讲讲判断推理')}`,
+    (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : session()),
+  )
+  await vi.waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(1))
+  // 模拟用户点返回：组件卸载。
+  wrapper.unmount()
+  await flushPromises()
+  // 回答已经发出并保存中，不应主动中断；刷新后可看到结果。
+  expect(stream.cancel).not.toHaveBeenCalled()
+})
+
+it('输入框回车发送，Shift+回车换行', async () => {
+  const stream = mockStream()
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession(),
+  )
+  const box = wrapper.get('#coach-input textarea')
+  await box.setValue('回车发送的消息')
+  // 普通回车：提交，不插入换行。
+  await box.trigger('keydown', { key: 'Enter' })
+  await flushPromises()
+  await vi.waitFor(() => expect(stream.fetcher).toHaveBeenCalledTimes(1))
+  const body = JSON.parse(stream.fetcher.mock.calls[0][1]!.body as string)
+  expect(body.text).toBe('回车发送的消息')
+
+  // Shift+回车：保留换行，不发送。
+  const calls = stream.fetcher.mock.calls.length
+  await box.setValue('第一行')
+  await box.trigger('keydown', { key: 'Enter', shiftKey: true })
+  await flushPromises()
+  expect(stream.fetcher.mock.calls.length).toBe(calls)
+})
+
+it('输入法组词时的回车不误发送', async () => {
+  const stream = mockStream()
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession(),
+  )
+  const box = wrapper.get('#coach-input textarea')
+  await box.setValue('zhong')
+  // 拼音选词确认键：isComposing 为真时必须交给输入法。
+  await box.trigger('keydown', { key: 'Enter', isComposing: true })
+  await flushPromises()
+  expect(stream.fetcher).not.toHaveBeenCalled()
+})
+
 it('个人中心保存单选科目到后端而非仅本地缓存', async () => {
   const { wrapper, request } = await render(ProfileView, '/practice/profile', (c) =>
     c.method === 'PUT' ? { subject: 'vocational_aptitude' } : { subject: null },
@@ -89,7 +222,7 @@ it('个人中心保存单选科目到后端而非仅本地缓存', async () => {
     expect.objectContaining({
       method: 'PUT',
       url: '/api/v1/me/study-preference',
-      data: { subject: 'vocational_aptitude' },
+      data: { subject: 'vocational_aptitude', examYear: null },
     }),
   )
 })
@@ -126,18 +259,19 @@ it('聊天刷新只读取会话，不重复发送快捷首句；卡片提交携�
   await wrapper.get('input[type="radio"][value="B"]').setValue(true)
   await wrapper.get('[data-test="submit-answer"]').trigger('click')
   await flushPromises()
-  expect(request).toHaveBeenCalledWith(
+  const fetcher = vi.mocked(fetch)
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(fetcher.mock.calls[0]![0]).toBe(`/gateway/api/v1/coach/sessions/${sessionId}/turns/stream`)
+  expect(JSON.parse(fetcher.mock.calls[0]![1]!.body as string)).toEqual(
     expect.objectContaining({
-      method: 'POST',
-      url: `/api/v1/coach/sessions/${sessionId}/turns`,
-      data: expect.objectContaining({
-        action: 'answer',
-        questionId: 'q1',
-        keys: ['B'],
-        requestId: expect.any(String),
-      }),
+      action: 'answer',
+      questionId: 'q1',
+      keys: ['B'],
+      requestId: expect.any(String),
     }),
   )
+  expect(wrapper.get('.is-pending').text()).toContain('我的答案：B')
+  expect(request.mock.calls.some(([c]) => c.method === 'POST')).toBe(false)
 })
 it('追问后题目卡片仍内联在出题那条消息里，不在底部重复渲染', async () => {
   const answered = {
@@ -369,11 +503,8 @@ it('快捷建议由后端给出，前端循环渲染在对话末尾', async () =
   expect(articles.at(-1)!.element.contains(actions.element)).toBe(false)
   await wrapper.get('[data-test="quick-next-继续下一题"]').trigger('click')
   await flushPromises()
-  expect(request.mock.calls.at(-1)![0]).toMatchObject({
-    method: 'POST',
-    url: `/api/v1/coach/sessions/${sessionId}/turns`,
-    data: expect.objectContaining({ action: 'next' }),
-  })
+  expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string).action).toBe('next')
+  expect(request.mock.calls.some(([c]) => c.method === 'POST')).toBe(false)
 })
 
 it('没有后端建议时不渲染快捷区，前端不自造按钮', async () => {
@@ -397,31 +528,300 @@ it('没有后端建议时不渲染快捷区，前端不自造按钮', async () =
   expect(wrapper.find('.coach-quick-actions').exists()).toBe(false)
 })
 
-it('chat 类建议只预填输入框，不替用户直接发送', async () => {
-  const chat = {
-    ...session(),
-    currentQuestion: null,
+it('chat 建议按用户原意直接发送，普通聊天也逐段显示且 done 保留权威建议', async () => {
+  const stream = mockStream()
+  let saved = chatSession()
+  const { wrapper, router, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : saved),
+  )
+  await wrapper.get('[data-test="quick-chat-再讲讲"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.get('.is-pending').text()).toContain('再讲讲这个知识点')
+  expect(JSON.parse(stream.fetcher.mock.calls[0]![1]!.body as string)).toMatchObject({
+    action: 'chat',
+    text: '再讲讲这个知识点',
+  })
+  const state: CoachSession = {
+    ...chatSession(),
+    processing: true,
+    messages: [...chatSession().messages, { id: 'u1', role: 'user', text: '再讲讲这个知识点' }],
+  }
+  stream.event('state', state)
+  await flushPromises()
+  expect(wrapper.find('.is-pending').exists()).toBe(false)
+  stream.event('delta', { text: '宏观' })
+  await flushPromises()
+  expect(wrapper.get('.is-streaming').text()).toContain('宏观')
+  stream.event('delta', { text: '经济' })
+  await flushPromises()
+  expect(wrapper.get('.is-streaming').text()).toContain('宏观经济')
+  stream.event('suggestions', { items: [{ action: 'chat', label: '临时建议', text: '临时' }] })
+  saved = {
+    ...chatSession(),
     messages: [
+      ...state.messages,
       {
-        id: 'm1',
+        id: 'a1',
         role: 'assistant',
-        text: '这是关于概念的说明。',
-        suggestions: [{ action: 'chat', label: '再讲讲', text: '再讲讲这个知识点' }],
+        text: '宏观经济，权威持久化讲解',
+        suggestions: [{ action: 'chat', label: '继续聊', text: '详细聊聊' }],
       },
     ],
   }
-  const { wrapper, request } = await render(
+  stream.event('done', saved)
+  await flushPromises()
+  expect(wrapper.find('.is-streaming').exists()).toBe(false)
+  expect(wrapper.text()).toContain('宏观经济，权威持久化讲解')
+  expect(wrapper.get('.coach-quick-actions').text()).toBe('继续聊')
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+  expect(request.mock.calls.some(([c]) => c.method === 'POST')).toBe(false)
+  await router.push('/practice/agent')
+  await router.push(`/practice/agent?session=${sessionId}`)
+  await flushPromises()
+  expect(wrapper.text()).toContain('宏观经济，权威持久化讲解')
+  expect(wrapper.get('.coach-quick-actions').text()).toBe('继续聊')
+})
+
+it('判分 state 先展示、reset 清理半截，done 只用持久化降级结果且不二次 explain', async () => {
+  const stream = mockStream()
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : session(),
+  )
+  await wrapper.get('input[type="radio"][value="B"]').setValue(true)
+  await wrapper.get('[data-test="submit-answer"]').trigger('click')
+  await flushPromises()
+  expect(wrapper.get('.is-pending').text()).toContain('我的答案：B')
+  const graded = {
+    ...session(),
+    processing: true,
+    messages: [
+      {
+        ...session().messages[0],
+        result: { correct: true, selectedKeys: ['B'], answerKeys: ['B'], explanationMd: '原解析' },
+      },
+      { id: 'u1', role: 'user', text: '我的答案：B' },
+    ],
+  }
+  stream.event('state', graded)
+  stream.event('delta', { text: '不完整讲解' })
+  await flushPromises()
+  expect(wrapper.text()).toContain('正确答案：B')
+  expect(wrapper.find('.is-pending').exists()).toBe(false)
+  stream.event('reset', {})
+  await flushPromises()
+  expect(wrapper.find('.is-streaming').exists()).toBe(false)
+  stream.event('done', {
+    ...graded,
+    processing: false,
+    messages: [
+      ...graded.messages,
+      {
+        id: 'a1',
+        role: 'assistant',
+        text: '已判分，暂时无法生成讲解',
+        suggestions: [{ action: 'next', label: '下一题' }],
+      },
+    ],
+  })
+  await flushPromises()
+  expect(wrapper.text()).not.toContain('不完整讲解')
+  expect(wrapper.text()).toContain('暂时无法生成讲解')
+  expect(wrapper.get('.coach-quick-actions').text()).toBe('下一题')
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+  expect(String(stream.fetcher.mock.calls[0]![0])).not.toContain('/explain')
+})
+
+it('断流只 GET 恢复已保存状态，不重发 POST，不伪造成功且回填未确认原文', async () => {
+  const stream = mockStream()
+  let reads = 0
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) => {
+    if (c.url === '/api/v1/coach/sessions') return { list: [] }
+    reads++
+    return chatSession()
+  })
+  await wrapper.get('#coach-input textarea').setValue('我的原文')
+  await wrapper.get('form.coach-composer').trigger('submit')
+  await flushPromises()
+  expect(wrapper.get('.is-pending').text()).toContain('我的原文')
+  stream.event('delta', { text: '半截' })
+  stream.close()
+  await flushPromises()
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+  expect(reads).toBe(2)
+  expect(wrapper.find('.is-pending').exists()).toBe(false)
+  expect(wrapper.find('.is-streaming').exists()).toBe(false)
+  expect((wrapper.get('#coach-input textarea').element as HTMLTextAreaElement).value).toBe(
+    '我的原文',
+  )
+  expect(wrapper.text()).not.toContain('半截')
+  expect(wrapper.text()).not.toContain('知序正在思考')
+})
+
+it('断流 GET 恢复服务端已保存判分和 processing，不把失败当成功', async () => {
+  const stream = mockStream()
+  let saved: unknown = session()
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : saved,
+  )
+  await wrapper.get('input[type="radio"][value="B"]').setValue(true)
+  await wrapper.get('[data-test="submit-answer"]').trigger('click')
+  await flushPromises()
+  saved = {
+    ...session(),
+    processing: true,
+    messages: [
+      {
+        ...session().messages[0],
+        result: { correct: true, selectedKeys: ['B'], answerKeys: ['B'], explanationMd: '原解析' },
+      },
+      { id: 'u1', role: 'user', text: '我的答案：B' },
+    ],
+  }
+  stream.close()
+  await flushPromises()
+  expect(wrapper.text()).toContain('正确答案：B')
+  expect(wrapper.text()).toContain('上一条消息仍在处理中')
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+})
+
+it('切换时 abort，旧失败和 finally 不污染新会话、新请求或草稿', async () => {
+  let rejectOld!: (error: Error) => void
+  const fetcher = vi.fn<typeof fetch>().mockImplementationOnce(
+    () =>
+      new Promise((_, reject) => {
+        rejectOld = reject
+      }),
+  )
+  vi.stubGlobal('fetch', fetcher)
+  const other = 'other-session'
+  const { wrapper, router } = await render(
     AgentView,
     `/practice/agent?session=${sessionId}`,
-    (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : chat),
+    (c) =>
+      c.url === '/api/v1/coach/sessions'
+        ? { list: [] }
+        : { ...chatSession(), id: c.url?.endsWith(other) ? other : sessionId },
   )
-  const before = request.mock.calls.length
-  await wrapper.get('[data-test="quick-chat-再讲讲"]').trigger('click')
+  await wrapper.get('#coach-input textarea').setValue('旧话')
+  await wrapper.get('form.coach-composer').trigger('submit')
   await flushPromises()
-  // 没有发请求，只是把话术填进输入框由用户确认。
-  expect(request.mock.calls.length).toBe(before)
-  const input = wrapper.get('#coach-input textarea')
-  expect((input.element as HTMLTextAreaElement).value).toBe('再讲讲这个知识点')
+  const oldSignal = fetcher.mock.calls[0]![1]!.signal!
+  await router.push(`/practice/agent?session=${other}`)
+  await flushPromises()
+  expect(oldSignal.aborted).toBe(true)
+  expect(wrapper.find('.is-pending').exists()).toBe(false)
+  expect((wrapper.get('#coach-input textarea').element as HTMLTextAreaElement).value).toBe('')
+  const stream = mockStream()
+  await wrapper.get('#coach-input textarea').setValue('新话')
+  await wrapper.get('form.coach-composer').trigger('submit')
+  await flushPromises()
+  rejectOld(new Error('late network failure'))
+  await flushPromises()
+  expect(wrapper.get('.is-pending').text()).toContain('新话')
+  expect(wrapper.text()).toContain('知序正在思考')
+  expect((wrapper.get('#coach-input textarea').element as HTMLTextAreaElement).value).toBe('')
+  const signal = stream.fetcher.mock.calls[0]![1]!.signal!
+  await router.push('/practice/profile')
+  await flushPromises()
+  expect(signal.aborted).toBe(true)
+  expect(wrapper.find('.is-pending').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('知序正在思考')
+})
+
+it('切换会话取消旧流避免串数据，但卸载页面不打断作答', async () => {
+  const old = mockStream()
+  const { wrapper, router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) =>
+      c.url === '/api/v1/coach/sessions'
+        ? { list: [] }
+        : { ...chatSession(), id: c.url?.endsWith('second') ? 'second' : sessionId },
+  )
+  await wrapper.get('#coach-input textarea').setValue('旧请求')
+  await wrapper.get('form.coach-composer').trigger('submit')
+  await flushPromises()
+  old.event('delta', { text: '旧讲解' })
+  await flushPromises()
+  expect(wrapper.get('.is-streaming').text()).toContain('旧讲解')
+  await router.push('/practice/agent?session=second')
+  await flushPromises()
+  expect(old.cancel).toHaveBeenCalledOnce()
+  expect(wrapper.text()).not.toContain('旧讲解')
+  // 卸载页面不中断已发出的回答：后端会继续生成并落库，用户返回后可见。
+  const next = mockStream()
+  await wrapper.get('#coach-input textarea').setValue('新请求')
+  await wrapper.get('form.coach-composer').trigger('submit')
+  await flushPromises()
+  const signal = next.fetcher.mock.calls[0]![1]!.signal!
+  wrapper.unmount()
+  await flushPromises()
+  expect(signal.aborted).toBe(false)
+  expect(next.cancel).not.toHaveBeenCalled()
+})
+
+it('delta 只在近底时跟随滚动，不抢用户向上阅读的位置', async () => {
+  const stream = mockStream()
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession(),
+  )
+  await wrapper.get('#coach-input textarea').setValue('请解释')
+  await wrapper.get('form.coach-composer').trigger('submit')
+  await flushPromises()
+  const element = wrapper.get('.coach-messages').element as HTMLElement
+  const scrollTo = vi.fn()
+  Object.defineProperties(element, {
+    scrollHeight: { configurable: true, value: 1000 },
+    clientHeight: { configurable: true, value: 300 },
+    scrollTo: { configurable: true, value: scrollTo },
+  })
+  element.scrollTop = 0
+  stream.event('delta', { text: '第一段' })
+  await flushPromises()
+  expect(scrollTo).not.toHaveBeenCalled()
+  element.scrollTop = 690
+  stream.event('delta', { text: '第二段' })
+  await flushPromises()
+  expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'auto' })
+})
+
+it('流式 HTTP401 沿用认证清理与固定提示，不泄露 trace', async () => {
+  const feedback = vi.fn()
+  const dispose = installErrorFeedback(feedback)
+  try {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: 40100,
+            message: '秘密内容',
+            traceId: 'private-trace',
+            data: null,
+          }),
+          { status: 401 },
+        ),
+      ),
+    )
+    const { wrapper, auth } = await render(
+      AgentView,
+      `/practice/agent?session=${sessionId}`,
+      (c) => (c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession()),
+    )
+    await wrapper.get('#coach-input textarea').setValue('请解释')
+    await wrapper.get('form.coach-composer').trigger('submit')
+    await flushPromises()
+    expect(auth.token).toBe('')
+    expect(auth.user).toBeNull()
+    expect(feedback).toHaveBeenCalledWith(
+      expect.objectContaining({ message: '登录已失效，请重新登录' }),
+    )
+    expect(JSON.stringify(feedback.mock.calls)).not.toContain('private-trace')
+  } finally {
+    dispose()
+  }
 })
 
 it('未选科目时引导个人中心，不创建假会话', async () => {

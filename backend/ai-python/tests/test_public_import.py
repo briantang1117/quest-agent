@@ -14,7 +14,7 @@ class Provider:
         self.calls = []
         self.closed = False
 
-    async def generate_json(self, messages):
+    async def generate_json(self, messages, *, background=False):
         self.calls.append(messages)
         return json.dumps({"questions": [self.question]})
 

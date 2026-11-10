@@ -12,7 +12,7 @@ class SequenceProvider:
         self.responses = iter(responses)
         self.calls = []
 
-    async def generate_json(self, messages):
+    async def generate_json(self, messages, *, background=False):
         self.calls.append(copy.deepcopy(messages))
         response = next(self.responses)
         if isinstance(response, Exception):
@@ -66,7 +66,7 @@ def test_graph_does_not_retry_provider_failure():
 
 def test_compiled_graph_isolates_concurrent_requests(question):
     class EchoProvider:
-        async def generate_json(self, messages):
+        async def generate_json(self, messages, *, background=False):
             source = messages[1]["content"]
             await asyncio.sleep(0)
             item = copy.deepcopy(question)

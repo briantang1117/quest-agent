@@ -13,6 +13,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import tools.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.util.List;
+import java.util.Set;
 
 /** JWT 只证明签名；业务身份、状态及权限每次都由数据库会话确认。 */
 final class SessionSecurityFilter extends OncePerRequestFilter {
@@ -53,7 +54,11 @@ final class SessionSecurityFilter extends OncePerRequestFilter {
                     || (path.matches("/api/v1/admin/public-imports/[^/]+") && request.getMethod().equals("GET"))
                     || (path.matches("/api/v1/admin/public-questions/[^/]+") && (request.getMethod().equals("GET") || request.getMethod().equals("PUT")))
                     || (path.matches("/api/v1/admin/public-questions/[^/]+/(confirm|publish)") && request.getMethod().equals("POST"));
-                if (identity.user().role().equals("admin") && !selfService && !userManagement && !publicManagement && !aiAudit && !path.equals("/api/v1/system/info")
+                boolean syllabusManagement = (path.equals("/api/v1/admin/syllabi") && Set.of("GET","POST").contains(request.getMethod()))
+                    || (path.matches("/api/v1/admin/syllabi/[0-9a-fA-F-]{36}") && Set.of("GET","PUT").contains(request.getMethod()))
+                    || (path.matches("/api/v1/admin/syllabi/[0-9a-fA-F-]{36}/(publish|archive|retry-review|rebuild-index)") && request.getMethod().equals("POST"))
+                    || (path.matches("/api/v1/admin/syllabi/[0-9a-fA-F-]{36}/file") && request.getMethod().equals("GET"));
+                if (identity.user().role().equals("admin") && !selfService && !userManagement && !publicManagement && !aiAudit && !syllabusManagement && !path.equals("/api/v1/system/info")
                         && !path.equals("/actuator/health") && !path.startsWith("/actuator/health/")) throw UserFailure.denied();
             } catch (UserFailure failure) {
                 SecurityContextHolder.clearContext();

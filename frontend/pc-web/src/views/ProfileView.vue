@@ -13,6 +13,8 @@ const auth = useAuthStore(),
 const subject = ref<StudySubject | undefined>(undefined),
   loading = ref(false),
   saving = ref(false)
+const examYear = ref('')
+const yearError = ref('')
 let alive = true
 onBeforeUnmount(() => {
   alive = false
@@ -21,7 +23,10 @@ onMounted(async () => {
   loading.value = true
   try {
     const value = await api.preference()
-    if (alive) subject.value = value.subject ?? undefined
+    if (alive) {
+      subject.value = value.subject ?? undefined
+      examYear.value = value.examYear === null ? '' : String(value.examYear)
+    }
   } catch (e) {
     notifyError(e)
   } finally {
@@ -30,10 +35,20 @@ onMounted(async () => {
 })
 async function save() {
   if (!subject.value || saving.value) return
+  const year = examYear.value.trim() === '' ? null : Number(examYear.value)
+  yearError.value =
+    year !== null &&
+    (!/^\d{4}$/.test(examYear.value.trim()) ||
+      !Number.isInteger(year) ||
+      year < 2000 ||
+      year > 2100)
+      ? '考试年份须为2000至2100的整数，或留空'
+      : ''
+  if (yearError.value) return
   saving.value = true
   try {
-    await api.setPreference(subject.value)
-    if (alive) Message.success('学习科目已保存，新对话将使用这个科目')
+    await api.setPreference(subject.value, year)
+    if (alive) Message.success('学习设置已保存，新对话将使用这些设置')
   } catch (e) {
     notifyError(e)
   } finally {
@@ -58,6 +73,23 @@ async function save() {
         }}</a-radio></a-radio-group
       ></a-spin
     >
+    <a-form :model="{ examYear }" layout="vertical">
+      <a-form-item
+        label="目标考试年份"
+        :validate-status="yearError ? 'error' : undefined"
+        :help="yearError || undefined"
+        extra="可留空；仅新对话使用所选年份，不自动改用其他年份考纲。"
+      >
+        <a-input
+          v-model="examYear"
+          data-test="exam-year"
+          allow-clear
+          placeholder="2000–2100（可选）"
+          :disabled="loading || saving"
+          :input-attrs="{ inputmode: 'numeric', 'aria-label': '目标考试年份' }"
+        />
+      </a-form-item>
+    </a-form>
     <div class="profile-actions">
       <a-button
         data-test="save-subject"

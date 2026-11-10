@@ -191,6 +191,38 @@ export const useAuthStore = defineStore('auth', () => {
       throw error
     }
   }
+  // 流式业务与普通请求共用身份/过期规则，错误由当前页面统一反馈，旧页面不得弹错。
+  async function streamRequest<T>(
+    operation: (credentials: {
+      token: string
+      baseURL: string
+      assertCurrent: () => void
+    }) => Promise<T>,
+  ): Promise<T> {
+    const version = revision
+    try {
+      if (!configured.value) throw new ApiError(configError.value)
+      if (!authenticated.value) throw new ApiError('请先登录', 40100)
+      if (Date.parse(expiresAt.value) <= Date.now()) {
+        clearSession('登录已过期，请重新登录')
+        throw new ApiError('登录已失效，请重新登录', 40100)
+      }
+      const result = await operation({
+        token: token.value,
+        baseURL: baseURL.value,
+        assertCurrent: () => assertCurrent(version),
+      })
+      assertCurrent(version)
+      return result
+    } catch (error) {
+      if (version === revision && authenticated.value && error instanceof ApiError) {
+        if (error.status === 401 || error.code === 40100) clearSession(errorMessage(error))
+        else if (error.code === 40310 && user.value)
+          user.value = { ...user.value, mustChangePassword: true }
+      }
+      throw error
+    }
+  }
   async function login(input: LoginInput, options: Pick<ApiRequestConfig, 'silent'> = {}) {
     clearSession()
     if (!configured.value) throw new ApiError(configError.value)
@@ -258,5 +290,6 @@ export const useAuthStore = defineStore('auth', () => {
     changePassword,
     logout,
     request,
+    streamRequest,
   }
 })

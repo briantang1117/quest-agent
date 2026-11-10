@@ -13,7 +13,7 @@ class Provider:
         self.result = result
         self.messages = []
 
-    async def generate_json(self, messages):
+    async def generate_json(self, messages, *, background=False):
         self.messages.append(messages)
         return json.dumps(self.result, ensure_ascii=False)
 
@@ -73,7 +73,7 @@ class FlakyProvider:
         self.bad = bad
         self.calls = 0
 
-    async def generate_json(self, messages):
+    async def generate_json(self, messages, *, background=False):
         self.calls += 1
         return (
             self.bad if self.calls <= self.bad_times else json.dumps(self.valid, ensure_ascii=False)
@@ -113,7 +113,7 @@ class TimeoutProvider:
     def __init__(self):
         self.calls = 0
 
-    async def generate_json(self, messages):
+    async def generate_json(self, messages, *, background=False):
         self.calls += 1
         from app.core.errors import ServiceError
 

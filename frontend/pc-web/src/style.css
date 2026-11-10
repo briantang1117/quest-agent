@@ -177,18 +177,33 @@ p {
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 1260px;
+  /* 只约束内容宽度，滚动交给 .practice-layout，滚动条才会贴在窗口最右侧。 */
+  max-width: none;
   margin: 0 auto;
-  padding: 48px 40px 64px;
-  /* 普通页面在内容区内滚动，footer 固定可见。 */
+  padding: 0;
+  overflow: visible;
+}
+/* 学员端内容列：居中限宽，滚动仍在整屏层级。 */
+.practice-layout > .page-container > * {
+  align-self: center;
+}
+.user-shell > .practice-layout {
   overflow-y: auto;
 }
-/* Agent 页占满一屏：收窄内边距，避免估算高度与footer叠加产生页面滚动。 */
+.user-shell > .practice-layout > .page-container {
+  width: 100%;
+  max-width: 1260px;
+  padding: 48px 40px 64px;
+}
+/* Agent 页占满一屏：滚动条在窗口右侧，内容区撑满可用高度。 */
 .user-shell > .practice-layout > .page-container.agent-fill {
-  padding-bottom: 24px;
+  /* Agent 页放大到接近全屏，四周统一 16px 边距。 */
+  max-width: 1680px;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  /* Agent 页不整体滚动，只让消息区滚动。 */
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
 }
 .page-heading {

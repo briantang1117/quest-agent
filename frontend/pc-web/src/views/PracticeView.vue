@@ -76,6 +76,14 @@ async function start(mode: 'practice' | 'chat') {
       ></a-button>
     </article>
     <article class="coach-entry">
+      <span class="entry-symbol" aria-hidden="true">纲</span>
+      <h2>考纲导览</h2>
+      <p>看清考查范围，按章节了解能力要求与题型。</p>
+      <a-button data-test="syllabus-guide-entry" @click="router.push('/practice/syllabus')"
+        >查看考纲<template #icon><IconArrowRight /></template
+      ></a-button>
+    </article>
+    <article class="coach-entry">
       <IconMessage class="entry-symbol" />
       <h2>和个人 Agent 聊聊</h2>
       <p>从一个不懂的知识点开始，也可以在对话中随时转入练习。</p>
@@ -107,7 +115,7 @@ async function start(mode: 'practice' | 'chat') {
 }
 .coach-entry-grid {
   display: grid;
-  grid-template-columns: 1.2fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: stretch;
   gap: 24px;
   margin-top: 28px;

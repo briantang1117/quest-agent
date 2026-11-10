@@ -21,7 +21,9 @@ import java.util.function.Supplier;
 /** 学员身份、题目快照和判分的唯一事实源；模型只能建议意图和讲解。 */
 @Service
 public class StudentCoachService {
-    public record Preference(String subject) {}
+    /** 与AI客户端保持一致的正文上限；历史上下文截断另用6000。 */
+    private static final int MAX_REPLY_CHARS=12000;
+    public record Preference(String subject,Integer examYear) {}
     public record Create(UUID requestId,String mode) {}
     public record Turn(UUID requestId,String action,String text,String questionId,List<String> keys) {}
     record Session(UUID id,long userId,String subject,String title,ObjectNode state,UUID processing) {}
@@ -32,7 +34,8 @@ public class StudentCoachService {
     private final ObjectMapper json;
     private final CoachAiClient ai;
     private final String mode;
-    public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;}
+    private final com.quest.api.syllabus.SyllabusService syllabi;
+    public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode,com.quest.api.syllabus.SyllabusService syllabi){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;this.syllabi=syllabi;}
     private JdbcTemplate db(){if(!mode.equals("postgresql")||jdbc.getIfAvailable()==null)throw unavailable();return jdbc.getObject();}
     private <T> T tx(SessionIdentity who,Supplier<T> work){
         db();var manager=managers.getIfAvailable();if(manager==null)throw unavailable();
@@ -42,14 +45,17 @@ public class StudentCoachService {
             return work.get();
         });}catch(DataAccessException failure){throw unavailable();}
     }
-    public Preference preference(SessionIdentity who){return tx(who,()->new Preference(subject(Long.parseLong(who.user().id()))));}
-    public Preference preference(SessionIdentity who,String subject){checkSubject(subject);return tx(who,()->{
-        long user=Long.parseLong(who.user().id());
-        // 与同用户偏好更新串行，避免首次设置并发插入。
-        db().queryForObject("SELECT id FROM app_user WHERE id=? FOR UPDATE",Long.class,user);
-        if(db().update("UPDATE student_study_preference SET subject=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?",subject,user)==0)db().update("INSERT INTO student_study_preference(user_id,subject) VALUES (?,?)",user,subject);
-        return new Preference(subject);
+    public Preference preference(SessionIdentity who){return tx(who,()->{
+        long user=Long.parseLong(who.user().id());return new Preference(subject(user),examYear(user));
     });}
+    public Preference preference(SessionIdentity who,String subject){return preference(who,subject,null);}
+    public Preference preference(SessionIdentity who,String subject,Integer examYear){checkSubject(subject);if(examYear!=null&&(examYear<2000||examYear>2100))throw new IllegalArgumentException();return tx(who,()->{
+        long user=Long.parseLong(who.user().id());
+        db().queryForObject("SELECT id FROM app_user WHERE id=? FOR UPDATE",Long.class,user);
+        if(db().update("UPDATE student_study_preference SET subject=?,exam_year=?,updated_at=CURRENT_TIMESTAMP WHERE user_id=?",subject,examYear,user)==0)db().update("INSERT INTO student_study_preference(user_id,subject,exam_year) VALUES (?,?,?)",user,subject,examYear);
+        return new Preference(subject,examYear);
+    });}
+    private Integer examYear(long user){var years=db().query("SELECT exam_year FROM student_study_preference WHERE user_id=?",(rs,n)->rs.getObject(1,Integer.class),user);return years.isEmpty()?null:years.getFirst();}
     private String subject(long user){var values=db().query("SELECT subject FROM student_study_preference WHERE user_id=?",(rs,n)->rs.getString(1),user);return values.isEmpty()?null:values.getFirst();}
     public JsonNode create(SessionIdentity who,Create input){
         if(input==null||input.requestId()==null||!Set.of("practice","chat").contains(input.mode()))throw new IllegalArgumentException();
@@ -60,6 +66,7 @@ public class StudentCoachService {
             if(db().queryForObject("SELECT COUNT(*) FROM student_coach_session WHERE id=?",Integer.class,input.requestId())!=0)throw missing();
             String subject=subject(user);if(subject==null)throw new UserFailure(409,40930,"请先在个人中心选择学习科目");
             ObjectNode state=json.createObjectNode();state.putArray("messages");state.putArray("seen");
+            Integer year=examYear(user);if(year!=null){state.put("examYear",year);UUID version=syllabi.boundVersion(subject,year);if(version!=null)state.put("syllabusVersionId",version.toString());}
             Session session=new Session(input.requestId(),user,subject,input.mode().equals("practice")?"互动刷题":"个人对话",state,null);
             if(input.mode().equals("practice")){message(state,"user","按我当前选择的科目开始刷题，一次一道，回答后再讲解。");nextQuestion(session);}
             else message(state,"assistant","你好，我是你的个人学习Agent。可以问我知识点，也可以说‘开始刷题’，我会从当前科目的已发布题目中选一道。 ");
@@ -71,8 +78,7 @@ public class StudentCoachService {
     public JsonNode get(SessionIdentity who,String id){UUID key=uuid(id);return tx(who,()->view(require(key,Long.parseLong(who.user().id()),false)));}
     private Session find(UUID id,long user,boolean lock){var rows=db().query("SELECT * FROM student_coach_session WHERE id=? AND user_id=?"+(lock?" FOR UPDATE":""),(rs,n)->new Session(id,user,rs.getString("subject"),rs.getString("title"),(ObjectNode)json.readTree(rs.getString("state_json")),rs.getObject("processing_request",UUID.class)),id,user);return rows.isEmpty()?null:rows.getFirst();}
     private Session require(UUID id,long user,boolean lock){var s=find(id,user,lock);if(s==null)throw missing();return s;}
-    public JsonNode turn(SessionIdentity who,String id,Turn input){return turn(who,id,input,null);}
-    public JsonNode turn(SessionIdentity who,String id,Turn input,String traceId){
+    Pending claim(SessionIdentity who,String id,Turn input){
         UUID key=uuid(id);validateTurn(input);
         Pending pending;
         try{
@@ -85,10 +91,16 @@ public class StudentCoachService {
                 if("processing".equals(row.get("status")))throw conflict();
                 throw new UserFailure(503,50331,"本次消息处理失败，未自动重试");
             }
-            if(s.processing()!=null)throw conflict();
+            if(s.processing()!=null){
+                // 原轮次超过硬截止时间后才回收，不自动重放任何付费调用。
+                var times=db().query("SELECT created_at FROM student_coach_turn WHERE session_id=? AND request_id=?",(rs,n)->rs.getObject(1,OffsetDateTime.class),s.id(),s.processing());
+                if(times.isEmpty()||!times.getFirst().isBefore(OffsetDateTime.now().minusMinutes(5)))throw conflict();
+                db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",s.id(),s.processing());
+                db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND processing_request=?",s.id(),s.userId(),s.processing());
+            }
             db().update("INSERT INTO student_coach_turn(id,session_id,request_id,request_hash,status) VALUES (?,?,?,?,'processing')",UUID.randomUUID(),key,input.requestId(),requestFingerprint(input));
             db().update("UPDATE student_coach_session SET processing_request=? WHERE id=? AND user_id=?",input.requestId(),key,s.userId());
-            return new Pending(s,input,null);
+            return new Pending(new Session(s.id(),s.userId(),s.subject(),s.title(),s.state(),null),input,null);
             });
         }catch(RuntimeException failure){
             if(failure instanceof UserFailure userFailure)throw userFailure;
@@ -96,6 +108,12 @@ public class StudentCoachService {
                 .warn("Coach turn claim failed: type={}", failure.getClass().getName(), failure);
             throw new UserFailure(503,50330,"个人Agent暂不可用，请确认数据库与模型服务");
         }
+        return pending;
+    }
+    public JsonNode turn(SessionIdentity who,String id,Turn input){return turn(who,id,input,null);}
+    public JsonNode turn(SessionIdentity who,String id,Turn input,String traceId){
+        UUID key=uuid(id);
+        Pending pending=claim(who,id,input);
         if(pending.replay()!=null)return pending.replay();
         try {
             Session s=pending.session();ObjectNode state=s.state();
@@ -155,10 +173,128 @@ public class StudentCoachService {
             throw new UserFailure(503,50331,"陪练处理失败，未自动重试");
         }
     }
+    /** 一个轮次内流式生成并持久化；明确动作不再经过模型路由。 */
+    public JsonNode streamTurn(SessionIdentity who,Pending pending,String traceId,
+                               java.util.function.BiConsumer<String,JsonNode> emit,CoachStreamControl control){
+        if(pending.replay()!=null)return pending.replay();
+        Session s=pending.session();Turn input=pending.request();ObjectNode state=s.state();
+        String text=input.text()==null?"":input.text().strip();
+        boolean graded=false,saved=false;
+        String stage="checkpoint";
+        ObjectNode assistant=null;
+        try{
+            control.check();
+            message(state,"user",input.action().equals("answer")?"我的答案："+String.join("、",input.keys()==null?List.of():input.keys()):input.action().equals("next")?"下一题":text);
+            String action=input.action();
+            if(action.equals("answer")){
+                grade(state,input);graded=true;
+            }
+            // 在任何付费调用前保存用户消息及判分；断流不能让作答消失。
+            checkpoint(who,s,input);saved=true;
+            ObjectNode initial=(ObjectNode)view(s);initial.put("processing",true);emit.accept("state",initial);
+            if(action.equals("chat")){
+                stage="route";
+                JsonNode intent=ai.route(context(s,text),who.user().id(),traceId);
+                control.check();action=intent.path("action").asText();
+                if(!Set.of("next","answer","chat","clarify").contains(action))throw unavailable();
+                if(action.equals("answer")){
+                    if(!state.hasNonNull("current")||state.hasNonNull("result"))throw conflict();
+                    List<String> keys=new ArrayList<>();for(JsonNode k:intent.path("keys"))keys.add(k.asText());
+                    validateSelection(state.path("current").path("snapshot"),keys);
+                    state.set("suggestedKeys",json.valueToTree(keys));
+                    assistant=message(state,"assistant","你是要提交 "+String.join("、",keys)+" 吗？请在题目卡片确认选项后提交。");
+                }else if(action.equals("clarify")){
+                    assistant=message(state,"assistant",safeReply(intent));
+                    suggestions(assistant,intent.path("suggestions"),false,canAdvance(s));
+                }
+            }
+            if(action.equals("next"))nextQuestion(s);
+            else if(assistant==null){
+                String prompt=graded?"请基于权威判分讲解这道题，说明思路与容易混淆之处。":text;
+                StringBuilder reply=new StringBuilder();
+                stage="explain";
+                JsonNode meta=ai.explain(context(s,prompt),who.user().id(),traceId,chunk->{
+                    control.check();
+                    if(reply.length()+chunk.length()>MAX_REPLY_CHARS)throw unavailable();
+                    reply.append(chunk);emit.accept("delta",json.createObjectNode().put("text",chunk));
+                },control);
+                control.check();
+                if(reply.toString().isBlank())throw unavailable();
+                assistant=message(state,"assistant",reply.toString());
+                suggestions(assistant,meta.path("items"),graded,canAdvance(s));
+            }
+            control.check();
+            stage="persist";
+            return finish(who,s,input);
+        }catch(RuntimeException failure){
+            org.slf4j.LoggerFactory.getLogger(StudentCoachService.class).warn("Coach stream failed: stage={} trace={} code={} type={}",stage,traceId,failure instanceof UserFailure uf?uf.code():0,failure.getClass().getName());
+            // 不把半截回复当完整消息；已判分则保存降级提示并完成本轮，避免再次判分/计费。
+            boolean interrupted=Thread.interrupted();
+            try{
+                if(graded){
+                    if(assistant!=null)state.withArray("messages").remove(state.withArray("messages").size()-1);
+                    assistant=message(state,"assistant","AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。");
+                    suggestions(assistant,null,true,canAdvance(s));
+                    JsonNode response=finish(who,s,input);
+                    try{emit.accept("reset",json.createObjectNode());}catch(RuntimeException ignored){/* 对端已关闭 */}
+                    return response;
+                }
+                // 对话失败保留用户消息与中断提示，刷新可见；非法提交不作为成功轮次。
+                if(saved){
+                    if(assistant!=null)state.withArray("messages").remove(state.withArray("messages").size()-1);
+                    message(state,"assistant","本次回答未完成，未自动重试。你可以重新发送问题。");
+                    JsonNode response=finish(who,s,input);
+                    try{emit.accept("reset",json.createObjectNode());}catch(RuntimeException ignored){/* 对端已关闭 */}
+                    return response;
+                }
+                fail(who,s,input);
+                throw failure;
+            }catch(RuntimeException cleanupFailure){
+                // 登录已失效时只清理服务端持有的认领，不返回私有内容；数据库故障由租约回收兜底。
+                try{releaseClaim(s,input);}catch(RuntimeException unavailable){org.slf4j.LoggerFactory.getLogger(StudentCoachService.class).warn("Coach claim cleanup deferred: type={}",unavailable.getClass().getName());}
+                throw cleanupFailure;
+            }finally{if(interrupted)Thread.currentThread().interrupt();}
+        }
+    }
+    private boolean canAdvance(Session s){return (!s.state().hasNonNull("current")||s.state().hasNonNull("result"))&&hasRemaining(s);}
+    private void grade(ObjectNode state,Turn input){
+        JsonNode current=state.path("current");
+        if(!current.isObject()||!current.path("id").asText().equals(input.questionId())||state.hasNonNull("result"))throw conflict();
+        List<String> keys=input.keys()==null?List.of():input.keys();JsonNode snapshot=current.path("snapshot");validateSelection(snapshot,keys);
+        Set<String> actual=new HashSet<>();for(JsonNode key:snapshot.path("answer").path("keys"))actual.add(key.asText());
+        ObjectNode result=json.createObjectNode();result.put("correct",actual.equals(new HashSet<>(keys)));result.set("selectedKeys",json.valueToTree(keys));result.set("answerKeys",snapshot.path("answer").path("keys").deepCopy());result.put("explanationMd",snapshot.path("explanation_md").asText(""));
+        state.set("result",result);state.remove("suggestedKeys");
+        for(JsonNode item:state.withArray("messages"))if(item.path("question").path("id").asText().equals(input.questionId()))((ObjectNode)item).set("result",result.deepCopy());
+    }
+    private void checkpoint(SessionIdentity who,Session s,Turn input){
+        tx(who,()->{
+            Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
+            db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",json.writeValueAsString(s.state()),s.id(),s.userId());return null;
+        });
+    }
+    private JsonNode finish(SessionIdentity who,Session s,Turn input){
+        return tx(who,()->{
+            Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
+            JsonNode response=view(s);
+            db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",json.writeValueAsString(s.state()),s.id(),s.userId());
+            db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),s.id(),input.requestId());return response;
+        });
+    }
+    void abandon(SessionIdentity who,Pending pending){if(pending.replay()==null)releaseClaim(pending.session(),pending.request());}
+    private void fail(SessionIdentity who,Session s,Turn input){releaseClaim(s,input);}
+    /** 服务端善后只按已鉴权认领的 user/session/request 三元组操作，不依赖浏览器登录仍有效。 */
+    private void releaseClaim(Session s,Turn input){
+        new TransactionTemplate(managers.getObject()).execute(status->{
+            Session live=require(s.id(),s.userId(),true);
+            if(!input.requestId().equals(live.processing()))return null;
+            db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",s.id(),input.requestId());
+            db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND processing_request=?",s.id(),s.userId(),input.requestId());return null;
+        });
+    }
     /** 是否还有本会话未练过的已发布题：只返回布尔，不暴露题库规模。 */
     private boolean hasRemaining(Session s){
         var seen=new HashSet<String>();for(JsonNode item:s.state().withArray("seen"))seen.add(item.asText());
-        var ids=db().query("SELECT q.id FROM public_question q JOIN public_bank b ON b.id=q.bank_id WHERE b.subject=? AND q.status='published' AND q.deleted_at IS NULL ORDER BY q.id LIMIT 200",
+        var ids=db().query("SELECT q.id FROM public_question q JOIN public_bank b ON b.id=q.bank_id WHERE b.subject=? AND q.status='published' AND q.deleted_at IS NULL ORDER BY q.id",
             (rs,n)->rs.getString(1),s.subject());
         return ids.stream().anyMatch(id->!seen.contains(id));
     }
@@ -180,7 +316,7 @@ public class StudentCoachService {
         return card;
     }
     private JsonNode view(Session s){
-        ObjectNode response=json.createObjectNode();response.put("id",s.id().toString());response.put("subject",s.subject());response.put("title",s.title());response.set("messages",s.state().path("messages").deepCopy());
+        ObjectNode response=json.createObjectNode();response.put("id",s.id().toString());response.put("subject",s.subject());response.put("title",s.title());response.set("examYear",s.state().has("examYear")?s.state().get("examYear"):json.nullNode());response.set("syllabusVersionId",s.state().has("syllabusVersionId")?s.state().get("syllabusVersionId"):json.nullNode());response.set("messages",s.state().path("messages").deepCopy());
         response.set("currentQuestion",s.state().hasNonNull("current")?visibleQuestion(s.state().get("current")):json.nullNode());response.set("result",s.state().path("result").isMissingNode()?json.nullNode():s.state().get("result").deepCopy());
         response.set("suggestedKeys",s.state().path("suggestedKeys").isMissingNode()?json.createArrayNode():s.state().get("suggestedKeys"));response.put("processing",s.processing()!=null);return response;
     }
@@ -203,7 +339,7 @@ public class StudentCoachService {
                     case "chat"->true;
                     default->false;
                 };
-                if(!allowed)continue;
+                if(!allowed||action.equals("chat")&&(item.path("text").asText("").isBlank()||item.path("text").asText("").length()>200))continue;
                 ObjectNode entry=list.addObject();entry.put("action",action);entry.put("label",label);
                 if(action.equals("chat"))entry.put("text",item.path("text").asText("").strip());
                 if(list.size()>=4)break;
@@ -222,6 +358,10 @@ public class StudentCoachService {
         }
         if(s.state().hasNonNull("result")){
             JsonNode result=s.state().get("result");payload.put("result",Map.of("correct",result.path("correct").asBoolean(),"selected_keys",result.path("selectedKeys"),"answer_keys",result.path("answerKeys"),"explanation_md",result.path("explanationMd").asText()));
+        }
+        if(s.state().hasNonNull("syllabusVersionId")&&s.state().hasNonNull("examYear")){
+            // 只从本会话固定版本按章节检索，明确是局部依据，不静默切换到新考纲。
+            payload.put("syllabus",syllabi.context(s.state().path("syllabusVersionId").asText(),s.subject(),s.state().path("examYear").asInt(),text));
         }
         return payload;
     }

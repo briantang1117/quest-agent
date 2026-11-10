@@ -100,6 +100,8 @@ class ArkEmbeddingProvider(ToolProvider):
                 raise self._invalid_output()
         except (OverflowError, ValueError):
             raise self._invalid_output() from None
+        if not any(value != 0 for value in vector):
+            raise self._invalid_output()
         expected = self._settings.embedding_dimensions
         if expected is not None and len(vector) != expected:
             raise ServiceError(502, 50202, "Embedding上游向量维度与配置不一致")

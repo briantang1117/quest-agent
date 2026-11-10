@@ -1,3 +1,5 @@
+import { ApiError } from './api'
+
 export interface SSEEvent {
   event: string
   data: string
@@ -89,9 +91,23 @@ export async function streamPost(
     body: JSON.stringify(body),
     signal,
   })
-  if (!res.ok) {
+  if (signal?.aborted) {
     await res.body?.cancel()
-    throw new Error(`SSE HTTP ${res.status}`)
+    signal.throwIfAborted()
+  }
+  if (!res.ok) {
+    let value: Record<string, unknown> = {}
+    try {
+      value = (await res.json()) ?? {}
+    } catch {
+      // 非 JSON 错误也必须保留 HTTP 状态供认证层处理。
+    }
+    throw new ApiError(
+      typeof value.message === 'string' ? value.message : `SSE HTTP ${res.status}`,
+      typeof value.code === 'number' ? value.code : undefined,
+      typeof value.traceId === 'string' ? value.traceId : undefined,
+      res.status,
+    )
   }
   if (
     res.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'text/event-stream'
@@ -105,9 +121,17 @@ export async function streamPost(
   let complete = false
   const parser = createSSEParser((event) => {
     if (complete) return
-    if (event.event === 'error') throw new Error(`SSE error: ${event.data}`)
-    if (event.event === 'done') complete = true
+    if (event.event === 'error') {
+      const value = JSON.parse(event.data) as Record<string, unknown>
+      throw new ApiError(
+        typeof value.message === 'string' ? value.message : '流式请求失败',
+        typeof value.code === 'number' ? value.code : undefined,
+        typeof value.traceId === 'string' ? value.traceId : undefined,
+      )
+    }
+    // done 负载由具体协议回调校验；校验失败不能标记成功。
     options.onEvent(event)
+    if (event.event === 'done') complete = true
   })
   const abort = () => {
     void reader.cancel().catch(() => {})

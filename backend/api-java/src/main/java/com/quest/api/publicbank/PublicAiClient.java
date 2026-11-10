@@ -20,18 +20,84 @@ public class PublicAiClient {
     private final ObjectMapper json;
     private final String base,token,secret;
     private final com.quest.api.coach.AiCallAudit audit;
-    private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build();
+    // 内部 Uvicorn 仅提供 HTTP/1.1，禁止默认 h2c Upgrade 探测。
+    private final HttpClient http=HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).connectTimeout(Duration.ofSeconds(5)).followRedirects(HttpClient.Redirect.NEVER).build();
     public PublicAiClient(ObjectMapper json,@Value("${AI_SERVICE_URL:http://127.0.0.1:8000}") String base,
                           @Value("${INTERNAL_SERVICE_TOKEN:}") String token,@Value("${INTERNAL_HMAC_SECRET:}") String secret,
                           com.quest.api.coach.AiCallAudit audit){this.json=json;this.base=base;this.token=token;this.secret=secret;this.audit=audit;}
     /** actor 与 traceId 只用于审计归因，不参与签名。 */
     public record Caller(Long actor,String traceId){}
     public JsonNode coachTurn(Object payload,Caller caller) { return post("/internal/coach-turn",payload,128*1024,caller); }
+    public JsonNode coachRoute(Object payload,Caller caller) { return post("/internal/coach-route",payload,128*1024,caller); }
     public JsonNode coachTurn(Object payload) { return post("/internal/coach-turn",payload,128*1024,null); }
     public JsonNode extract(String text) { return post("/internal/public-import",Map.of("scope","admin","text",text),256*1024,null); }
     public JsonNode extractCandidate(String text,JsonNode candidate) { return post("/internal/public-import",Map.of("scope","admin","text",text,"candidate",candidate),256*1024,null); }
     public JsonNode inspectPdf(byte[] pdf) { return post("/internal/pdf-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),2*1024*1024,null); }
+    public JsonNode reviewSyllabus(String examType,JsonNode sections) { return post("/internal/syllabus-review",Map.of("scope","admin","examType",examType,"sections",sections),512*1024,null); }
+    public JsonNode embedSyllabus(List<String> texts,String scope) { return post("/internal/syllabus-embed",Map.of("scope",scope,"texts",texts),4*1024*1024,null); }
+    public JsonNode inspectSyllabus(byte[] pdf) { return post("/internal/syllabus-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),6*1024*1024,null); }
     private JsonNode post(String path,Object payload,int maxResponse){return post(path,payload,maxResponse,null);}
+    private static final java.util.concurrent.ScheduledExecutorService DEADLINES=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"coach-stream-deadline");t.setDaemon(true);return t;});
+    /** 有界读取内部 SSE，截止时间覆盖响应头及响应体；任何出口都记录一次审计。 */
+    public JsonNode coachExplain(Object payload,Caller caller,java.util.function.Consumer<String> onDelta,com.quest.api.coach.CoachStreamControl control){
+        long started=System.nanoTime();String path="/internal/coach-explain";
+        StringBuilder text=new StringBuilder();JsonNode suggestions=json.createObjectNode().set("items",json.createArrayNode());
+        Throwable auditFailure=null;
+        var deadline=DEADLINES.schedule(control::close,95,java.util.concurrent.TimeUnit.SECONDS);
+        try{
+            control.check();
+            if(token.isBlank()||secret.length()<32)throw new UserFailure(503,50321,"内部AI服务未配置");
+            URI root=URI.create(base);
+            if(!Set.of("http","https").contains(root.getScheme())||root.getHost()==null||root.getUserInfo()!=null||root.getQuery()!=null||root.getFragment()!=null||(root.getPath()!=null&&!Set.of("","/").contains(root.getPath())))throw new IllegalArgumentException();
+            byte[] body=json.writeValueAsBytes(payload);
+            String stamp=Long.toString(Instant.now().getEpochSecond()),nonce=UUID.randomUUID().toString();
+            String message=String.join("\n",stamp,nonce,"POST",path,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)));
+            Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8),"HmacSHA256"));
+            var request=HttpRequest.newBuilder(root.resolve(path)).timeout(Duration.ofSeconds(95)).header("Content-Type","application/json")
+                .header("X-Service-Token",token).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
+            var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
+            try(var stream=response.body()){
+                control.attach(stream);
+                if(response.statusCode()!=200)throw new UserFailure(503,50200,"AI服务暂不可用");
+                if(!response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT).startsWith("text/event-stream"))throw new UserFailure(503,50204,"AI服务流格式错误");
+                var decoder=StandardCharsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT);
+                var reader=new java.io.InputStreamReader(stream,decoder);
+                String event="";StringBuilder line=new StringBuilder(),data=new StringBuilder();int total=0;boolean done=false;
+                for(int ch;(ch=reader.read())!=-1;){
+                    control.check();if(++total>128*1024)throw new UserFailure(503,50204,"AI服务流超出上限");
+                    if(ch!='\n'){if(ch!='\r')line.append((char)ch);if(line.length()>32768)throw new UserFailure(503,50204,"AI服务事件超出上限");continue;}
+                    String value=line.toString();line.setLength(0);
+                    if(value.isEmpty()){
+                        if(event.equals("error"))throw new UserFailure(503,50203,"AI回答未完整生成");
+                        if(event.equals("done")){done=true;break;}
+                        if(event.equals("delta")){
+                            JsonNode parsed=json.readTree(data.toString());if(!parsed.path("text").isString())throw new UserFailure(503,50204,"AI服务流格式错误");
+                            String chunk=parsed.path("text").asText();if(text.length()+chunk.length()>MAX_REPLY_CHARS)throw new UserFailure(503,50204,"AI回答超出上限");
+                            text.append(chunk);onDelta.accept(chunk);
+                        }else if(event.equals("suggestions")){
+                            JsonNode parsed=json.readTree(data.toString());if(!parsed.path("items").isArray()||parsed.path("items").size()>4)throw new UserFailure(503,50204,"AI建议格式错误");suggestions=parsed;
+                        }else if(!event.isEmpty())throw new UserFailure(503,50204,"未知AI事件");
+                        event="";data.setLength(0);continue;
+                    }
+                    if(value.startsWith("event:"))event=value.substring(6).strip();
+                    else if(value.startsWith("data:")){if(!data.isEmpty())data.append('\n');data.append(value.substring(5).stripLeading());if(data.length()>32768)throw new UserFailure(503,50204,"AI事件超出上限");}
+                    else if(!value.startsWith(":"))throw new UserFailure(503,50204,"AI服务流格式错误");
+                }
+                if(!done||text.toString().isBlank())throw new UserFailure(503,50204,"AI回答未完整返回");
+                control.check();return suggestions;
+            }finally{control.detach();}
+        }catch(InterruptedException failure){auditFailure=failure;Thread.currentThread().interrupt();throw new UserFailure(503,50332,"本次生成已中断，未自动重试");}
+        catch(RuntimeException failure){auditFailure=failure;throw failure;}
+        catch(Exception failure){auditFailure=failure;throw new UserFailure(503,50322,"AI处理失败，未自动重试");}
+        finally{
+            deadline.cancel(false);
+            // 中断标记不应阻止审计使用 JDBC；写完恢复，供上层取消流程识别。
+            boolean interrupted=Thread.interrupted();
+            try{audit.record(caller==null?null:caller.actor(),"ai.coach_explain",null,caller==null?null:caller.traceId(),payload,json.createObjectNode().put("reply",text.toString()).set("suggestions",suggestions.path("items")),auditFailure,elapsed(started),1,null);}
+            finally{if(interrupted)Thread.currentThread().interrupt();}
+        }
+    }
     private JsonNode post(String path,Object payload,int maxResponse,Caller caller) {
         long started=System.nanoTime();
         String action="ai."+path.replace("/internal/","").replace('/','_');
@@ -39,7 +105,14 @@ public class PublicAiClient {
         catch(RuntimeException failure){audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,null,failure,elapsed(started),1,null);throw failure;}
     }
     private long elapsed(long started){return (System.nanoTime()-started)/1_000_000;}
+    /** 后台批处理（按20段整理整份考纲）比对话慢得多，不能套用对话的短超时。 */
+    private static final Duration BACKGROUND_TIMEOUT=Duration.ofSeconds(300);
+    /** 多主体对比/长解析的正常篇幅会超过4000字，上限过紧会被误判为格式错误。 */
+    private static final int MAX_REPLY_CHARS=12000;
     private JsonNode doPost(String path,Object payload,int maxResponse,Caller caller,String action,long started) {
+        return doPost(path,payload,maxResponse,caller,action,started,path.startsWith("/internal/syllabus-review")?BACKGROUND_TIMEOUT:Duration.ofSeconds(100));
+    }
+    private JsonNode doPost(String path,Object payload,int maxResponse,Caller caller,String action,long started,Duration timeout) {
         if(token.isBlank() || secret.length()<32)throw new UserFailure(503,50321,"内部AI服务未配置");
         try {
             URI root=URI.create(base);
@@ -48,7 +121,7 @@ public class PublicAiClient {
             String stamp=Long.toString(Instant.now().getEpochSecond()),nonce=UUID.randomUUID().toString();
             String message=String.join("\n",stamp,nonce,"POST",path,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)));
             Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8),"HmacSHA256"));
-            var request=HttpRequest.newBuilder(root.resolve(path)).timeout(Duration.ofSeconds(100)).header("Content-Type","application/json")
+            var request=HttpRequest.newBuilder(root.resolve(path)).timeout(timeout).header("Content-Type","application/json")
                 .header("X-Service-Token",token).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
             // 无应用级自动重试；故障不回显上游响应/URL/签名。

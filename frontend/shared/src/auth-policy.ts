@@ -15,12 +15,13 @@ function allowed(user: UserProfile, path: string) {
     (user.role === 'admin'
       ? path === '/admin/users' ||
         path === '/admin/banks' ||
+        path === '/admin/syllabi' ||
         // 只放行精确路径：日志详情走接口，不额外开放 /admin/logs/* 子路由。
         path === '/admin/logs' ||
-        /^\/admin\/(?:questions|banks)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+        /^\/admin\/(?:questions|banks|syllabi)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
           path,
         )
-      : ['/practice', '/practice/agent', '/practice/profile'].includes(path))
+      : ['/practice', '/practice/agent', '/practice/profile', '/practice/syllabus'].includes(path))
   )
 }
 // next采用精确白名单，不解析或归一化潜在的外部地址/编码路径。

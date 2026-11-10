@@ -67,10 +67,17 @@ class MigrationConfigTests(unittest.TestCase):
         self.assertEqual(env['SPRING_FLYWAY_CLEAN_DISABLED'], 'true')
         self.assertEqual(env['QUEST_PUBLIC_IMPORT_ENABLED'], 'false')
 
+    def test_explicit_v11_target_keeps_import_processing_disabled(self):
+        with patch.object(migrate, 'service_environment', return_value={
+                'QUEST_PUBLIC_IMPORT_ENABLED': 'true'}):
+            env = migrate.migration_environment(Path('/local/test'), target='11')
+        self.assertEqual(env['SPRING_FLYWAY_TARGET'], '11')
+        self.assertEqual(env['QUEST_PUBLIC_IMPORT_ENABLED'], 'false')
+
     def test_unknown_target_is_rejected_before_reading_credentials(self):
         with patch.object(migrate, 'service_environment') as load:
             with self.assertRaises(ValueError):
-                migrate.migration_environment(Path('/local/test'), target='10')
+                migrate.migration_environment(Path('/local/test'), target='12')
             load.assert_not_called()
 
 

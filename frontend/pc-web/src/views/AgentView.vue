@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   createCoachApi,
   notifyError,
+  streamTurn,
   subjectLabel,
   useAuthStore,
   type CoachSession,
@@ -12,7 +13,8 @@ import {
 } from '@quest/shared'
 import SafeMarkdown from '../components/SafeMarkdown.vue'
 import CoachQuestionCard from '../components/CoachQuestionCard.vue'
-const api = createCoachApi(useAuthStore()),
+const auth = useAuthStore(),
+  api = createCoachApi(auth),
   route = useRoute(),
   router = useRouter()
 const session = ref<CoachSession | null>(null),
@@ -23,11 +25,29 @@ const session = ref<CoachSession | null>(null),
   loading = ref(false),
   error = ref(false)
 const messages = ref<HTMLElement>()
+// 仅在服务端 state 确认之前展示乐观消息。
+const optimistic = ref<{ id: string; role: 'user'; text: string } | null>(null)
+// 临时文本不写入会话；done 必须整体替换为持久化结果。
+const streaming = ref('')
 let alive = true,
   revision = 0
+let active: { requestId: string; controller: AbortController } | null = null
+function cancelPending() {
+  revision++
+  active?.controller.abort()
+  active = null
+  optimistic.value = null
+  streaming.value = ''
+  busy.value = false
+  loading.value = false
+  draft.value = ''
+}
 onBeforeUnmount(() => {
+  // 卸载只停止本地回写：已发出的回答由后端生成并落库，
+  // 主动 abort 会把它变成"本次回答未完成"，用户回来只能看到失败。
   alive = false
   revision++
+  active = null
 })
 const current = computed(() => session.value?.currentQuestion)
 // 只渲染后端可信的建议；前端不再自行拼产品文案。
@@ -38,8 +58,7 @@ const quickActions = computed(() =>
 )
 function runQuick(item: { action: 'next' | 'chat'; text?: string }) {
   if (item.action === 'next') return void send('next')
-  // chat 建议带上预置话术，用户确认后再发送，不替用户直接发。
-  draft.value = item.text || ''
+  if (item.text?.trim()) void send('chat', item.text)
 }
 // 判分结果只认题上的 result：有结果就是展示态，没有才是可作答的交互态。
 function resultOf(id: string, value = session.value) {
@@ -58,17 +77,18 @@ function cardSelection(id: string) {
 function choose(id: string, keys: string[]) {
   if (id === current.value?.id && !resultOf(id)) selected.value = keys
 }
-async function list() {
+async function list(expectedRevision = revision) {
   try {
-    const value = await api.list()
-    if (alive) sessions.value = value.list
+    const value = await api.list(true)
+    if (alive && expectedRevision === revision) sessions.value = value.list
   } catch (e) {
-    notifyError(e)
+    if (alive && expectedRevision === revision) notifyError(e)
   }
 }
 async function load() {
   const id = route.query.session
-  const currentRevision = ++revision
+  cancelPending()
+  const currentRevision = revision
   session.value = null
   selected.value = []
   error.value = false
@@ -78,11 +98,24 @@ async function load() {
   }
   loading.value = true
   try {
-    const value = await api.get(id)
+    const value = await api.get(id, true)
     if (alive && currentRevision === revision) {
       session.value = value
       selected.value = selectionFor(value)
       await scroll()
+      // 消费一次章节首句并先移除query，刷新或缓存激活不重复发送。
+      const prompt = route.query.prompt
+      if (
+        typeof prompt === 'string' &&
+        prompt.trim() &&
+        prompt.length <= 2000 &&
+        !value.processing
+      ) {
+        const query = { ...route.query }
+        delete query.prompt
+        await router.replace({ path: route.path, query })
+        if (alive && currentRevision === revision) await send('chat', prompt)
+      }
     }
   } catch (e) {
     if (alive && currentRevision === revision) {
@@ -92,64 +125,155 @@ async function load() {
   } finally {
     if (alive && currentRevision === revision) loading.value = false
   }
-  await list()
+  if (alive && currentRevision === revision) await list(currentRevision)
 }
-async function scroll() {
+function nearBottom() {
+  const element = messages.value
+  return !element || element.scrollHeight - element.scrollTop - element.clientHeight < 96
+}
+async function scroll(expectedRevision = revision, follow = true) {
   await nextTick()
-  messages.value?.scrollTo({ top: messages.value.scrollHeight, behavior: 'smooth' })
+  // 部分环境（jsdom/旧浏览器）没有 scrollTo，滚动失败不应影响发送主流程。
+  if (alive && expectedRevision === revision && follow)
+    messages.value?.scrollTo?.({ top: messages.value.scrollHeight, behavior: 'auto' })
 }
-async function send(action: 'chat' | 'next' | 'answer') {
+async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
   if (
     busy.value ||
     !session.value ||
     session.value.processing ||
-    (action === 'chat' && !draft.value.trim()) ||
+    (action === 'chat' && !text.trim()) ||
     (action === 'answer' && !selected.value.length)
   )
     return
   const currentRevision = revision,
-    id = session.value.id
+    id = session.value.id,
+    initialMessageCount = session.value.messages.length
   const payload: CoachTurn = {
     requestId: crypto.randomUUID(),
     action,
-    text: action === 'chat' ? draft.value.trim() : '',
+    text: action === 'chat' ? text.trim() : '',
   }
   if (action === 'answer') {
     payload.questionId = current.value?.id
     payload.keys = [...selected.value]
   }
+  const controller = new AbortController()
+  active = { requestId: payload.requestId, controller }
+  const isCurrent = () =>
+    alive && revision === currentRevision && active?.requestId === payload.requestId
   busy.value = true
-  try {
-    const result = await api.turn(id, payload)
-    if (alive && currentRevision === revision) {
-      session.value = result
-      draft.value = ''
-      selected.value = selectionFor(result)
-      await scroll()
-      await list()
-    }
-  } catch (e) {
-    if (alive && currentRevision === revision) notifyError(e)
-  } finally {
-    if (alive && currentRevision === revision) busy.value = false
+  const sent =
+    action === 'chat'
+      ? payload.text
+      : action === 'next'
+        ? '下一题'
+        : `我的答案：${payload.keys!.join('、')}`
+  optimistic.value = { id: `pending-${payload.requestId}`, role: 'user', text: sent }
+  if (action === 'chat') draft.value = ''
+  void scroll(currentRevision)
+  let confirmed = false
+  const accept = (value: CoachSession) => {
+    if (!isCurrent()) return
+    const follow = nearBottom()
+    session.value = value
+    optimistic.value = null
+    selected.value = selectionFor(value)
+    confirmed = true
+    void scroll(currentRevision, follow)
   }
+  try {
+    await auth.streamRequest(({ token, baseURL, assertCurrent }) =>
+      streamTurn(id, payload, {
+        token,
+        baseURL,
+        signal: controller.signal,
+        onState: (value) => {
+          assertCurrent()
+          accept(value)
+        },
+        onDelta: (text) => {
+          assertCurrent()
+          if (!isCurrent()) return
+          const follow = nearBottom()
+          streaming.value += text
+          void scroll(currentRevision, follow)
+        },
+        onReset: () => {
+          assertCurrent()
+          if (isCurrent()) streaming.value = ''
+        },
+        onDone: (value) => {
+          assertCurrent()
+          if (!isCurrent()) return
+          streaming.value = ''
+          accept(value)
+        },
+      }),
+    )
+    if (isCurrent()) await list(currentRevision)
+  } catch (e) {
+    if (!isCurrent()) return
+    optimistic.value = null
+    streaming.value = ''
+    notifyError(e)
+    // 断流不代表服务器回滚；只读恢复，不重发付费 POST。
+    if (auth.authenticated && !controller.signal.aborted) {
+      try {
+        const value = await api.get(id, true)
+        if (!isCurrent()) return
+        if (
+          value.messages
+            .slice(initialMessageCount)
+            .some((item) => item.role === 'user' && item.text === sent)
+        )
+          confirmed = true
+        session.value = value
+        selected.value = selectionFor(value)
+      } catch (recoveryError) {
+        if (isCurrent()) notifyError(recoveryError)
+      }
+    }
+    if (isCurrent() && action === 'chat' && !confirmed) draft.value = text
+  } finally {
+    if (isCurrent()) {
+      optimistic.value = null
+      streaming.value = ''
+      busy.value = false
+      active = null
+    }
+  }
+}
+/**
+ * 回车发送、Shift+回车换行。
+ * 输入法组合输入（拼音选词）期间的 Enter 归输入法，不能误发。
+ */
+function onComposerKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey) return
+  // 中文输入法组词中，Enter 用于确认候选词。
+  if (event.isComposing || (event as KeyboardEvent & { keyCode?: number }).keyCode === 229) return
+  event.preventDefault()
+  void send('chat')
 }
 async function newChat() {
   if (busy.value) return
+  const expectedRevision = revision
   busy.value = true
   try {
     const value = await api.create(crypto.randomUUID(), 'chat')
-    await router.push({ path: '/practice/agent', query: { session: value.id } })
+    if (alive && revision === expectedRevision)
+      await router.push({ path: '/practice/agent', query: { session: value.id } })
   } catch (e) {
-    notifyError(e)
+    if (alive && revision === expectedRevision) notifyError(e)
   } finally {
-    busy.value = false
+    if (alive && revision === expectedRevision) busy.value = false
   }
 }
 watch(
-  () => (route.name === 'AgentView' ? route.query.session : undefined),
+  [() => route.name, () => route.query.session],
   () => {
     if (route.name === 'AgentView') void load()
+    else cancelPending()
   },
   { immediate: true },
 )
@@ -214,6 +338,16 @@ watch(
               @submit="send('answer')"
             />
           </article>
+          <!-- 服务端确认前先显示自己的消息，所有动作都立即反馈。 -->
+          <article v-if="optimistic" class="coach-message user is-pending">
+            <span class="message-speaker">我</span>
+            <SafeMarkdown class="message-prose" :source="optimistic.text" />
+          </article>
+          <!-- 临时文本仅用于流式展示，done 后由权威会话替换。 -->
+          <article v-if="streaming" class="coach-message assistant is-streaming">
+            <span class="message-speaker">知序</span>
+            <SafeMarkdown class="message-prose" :source="streaming" />
+          </article>
           <!-- 快捷建议由后端给出（文案可来自模型，动作由 Java 权威判定），前端只循环渲染。 -->
           <div
             v-if="!busy && quickActions.length && session"
@@ -246,6 +380,7 @@ watch(
           :max-length="2000"
           :auto-size="{ minRows: 2, maxRows: 5 }"
           :disabled="busy || session.processing"
+          @keydown="onComposerKeydown"
         />
         <div>
           <span>选项提交后核对答案；含糊表达会先向你确认。</span
@@ -264,7 +399,8 @@ watch(
 <style scoped>
 .personal-agent {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  /* 侧栏固定，对话区吃掉全部剩余宽度，撑满整屏。 */
+  grid-template-columns: 248px minmax(0, 1fr);
   /* 显式让行可收缩，否则grid行按内容高度撑开，矮窗口仍会页面滚动。 */
   grid-template-rows: minmax(0, 1fr);
   border: 1px solid var(--color-border-2);
@@ -273,6 +409,7 @@ watch(
   /* 高度完全由整屏flex链决定，不再用视口常量估算。 */
   flex: 1;
   min-height: 0;
+  width: 100%;
   overflow: hidden;
 }
 .coach-sessions {
@@ -433,6 +570,14 @@ watch(
   color: var(--color-text-3);
   font-size: 13px;
   margin-top: 16px;
+}
+/* 流式中的文字轻微淡化，读完后再转为正式样式。 */
+.coach-message.is-streaming {
+  opacity: 0.9;
+}
+/* 待确认的消息略淡化，让"还没真正送达"可见但不刺眼。 */
+.coach-message.is-pending {
+  opacity: 0.66;
 }
 /* 快捷操作像聊天建议一样贴在最后一条消息下方。 */
 .coach-quick-actions {

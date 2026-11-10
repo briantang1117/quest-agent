@@ -147,7 +147,7 @@ def test_embedding_accepts_real_object_shape_and_2048_dimensions():
 
 
 @pytest.mark.parametrize(
-    "vector", [[], [True], ["1.0"], [None], [float("nan")], [float("inf")], [0] * 65537]
+    "vector", [[], [True], ["1.0"], [None], [float("nan")], [float("inf")], [0, 0.0], [0] * 65537]
 )
 def test_embedding_rejects_invalid_vectors(vector):
     # 非有限值用原始JSON模拟，httpx的json编码器主动拒绝NaN。

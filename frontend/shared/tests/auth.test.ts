@@ -380,3 +380,54 @@ describe('用户管理wire契约', () => {
     })
   })
 })
+
+describe('流式请求认证边界', () => {
+  it('流式401与普通请求一样清除内存和持久化凭据', async () => {
+    const auth = setup(async (config) => response(config, result()))
+    await auth.login({ username: 'student_a', password: 'password' })
+    await expect(
+      auth.streamRequest(async (credentials) => {
+        expect(credentials.token).toBe('first')
+        expect(credentials.baseURL).toBe('/gateway')
+        throw new ApiError('secret', 40100, 'stream-trace', 401)
+      }),
+    ).rejects.toMatchObject({ code: 40100, traceId: 'stream-trace' })
+    expect(auth.authenticated).toBe(false)
+    expect(localStorage.getItem('quest.auth.session')).toBeNull()
+    expect(auth.sessionNotice).toBe('登录已失效，请重新登录')
+  })
+  it('旧流式401不得登出新身份，旧回调身份校验必须失败', async () => {
+    const auth = setup(async (config) => response(config, result()))
+    await auth.login({ username: 'student_a', password: 'password' })
+    let fail!: (error: unknown) => void
+    let check!: () => void
+    const old = auth.streamRequest((credentials) => {
+      check = credentials.assertCurrent
+      return new Promise((_, reject) => {
+        fail = reject
+      })
+    })
+    await auth.login({ username: 'student_a', password: 'password' })
+    expect(check).toThrow('会话已变更')
+    fail(new ApiError('expired', 40100))
+    await expect(old).rejects.toMatchObject({ code: 40100 })
+    expect(auth.authenticated).toBe(true)
+  })
+  it('本地到期不得开始流式操作，强制改密错误同步身份状态', async () => {
+    const auth = setup(async (config) =>
+      response(config, { ...result(), user: { ...user, mustChangePassword: false } }),
+    )
+    await auth.login({ username: 'student_a', password: 'password' })
+    await expect(
+      auth.streamRequest(async () => {
+        throw new ApiError('change password', 40310)
+      }),
+    ).rejects.toMatchObject({ code: 40310 })
+    expect(auth.user?.mustChangePassword).toBe(true)
+    auth.expiresAt = new Date(Date.now() - 1).toISOString()
+    const operation = vi.fn()
+    await expect(auth.streamRequest(operation)).rejects.toMatchObject({ code: 40100 })
+    expect(operation).not.toHaveBeenCalled()
+    expect(auth.authenticated).toBe(false)
+  })
+})

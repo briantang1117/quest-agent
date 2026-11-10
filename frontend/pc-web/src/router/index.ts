@@ -26,6 +26,12 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
             meta: { title: '学习工作区', pageDeepth: 1 },
           },
           {
+            path: 'syllabus',
+            name: 'SyllabusGuideView',
+            component: () => import('../views/SyllabusGuideView.vue'),
+            meta: { title: '考纲导览', pageDeepth: 1 },
+          },
+          {
             path: 'profile',
             name: 'ProfileView',
             component: () => import('../views/ProfileView.vue'),
@@ -61,6 +67,18 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
             name: 'AdminQuestionView',
             component: () => import('../views/AdminQuestionView.vue'),
             meta: { title: '题目审核', pageDeepth: 3 },
+          },
+          {
+            path: 'syllabi',
+            name: 'AdminSyllabiView',
+            component: () => import('../views/AdminSyllabiView.vue'),
+            meta: { title: '考纲管理', pageDeepth: 1 },
+          },
+          {
+            path: 'syllabi/:id',
+            name: 'AdminSyllabusDetailView',
+            component: () => import('../views/AdminSyllabusDetailView.vue'),
+            meta: { title: '考纲详情', pageDeepth: 2 },
           },
           {
             path: 'users',

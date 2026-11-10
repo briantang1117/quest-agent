@@ -28,6 +28,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
     "spring.flyway.enabled=false", "quest.persistence.mode=postgresql", "spring.autoconfigure.exclude=com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration"})
 @AutoConfigureMockMvc @ActiveProfiles("test")
 class ApiContractTest {
+    @org.junit.jupiter.api.Test void clientDisconnectIsNotLoggedAsUnhandledServerFailure() throws Exception {
+        // 反射取私有判定：Broken pipe 及其包装应识别为客户端断开。
+        var clazz = Class.forName("com.quest.api.common.ApiExceptionHandler");
+        var method = clazz.getDeclaredMethod("isClientGone", Throwable.class);
+        method.setAccessible(true);
+        var broken = new java.io.IOException("Broken pipe");
+        var wrapped = new org.springframework.http.converter.HttpMessageNotWritableException("Could not write JSON", broken);
+        org.assertj.core.api.Assertions.assertThat((Boolean) method.invoke(null, wrapped)).isTrue();
+        org.assertj.core.api.Assertions.assertThat((Boolean) method.invoke(null, new IllegalStateException("business"))).isFalse();
+    }
     @Autowired MockMvc mvc;
     static final String SECRET = "contract-test-secret-at-least-32-bytes-long";
     @Autowired org.springframework.jdbc.core.JdbcTemplate db;

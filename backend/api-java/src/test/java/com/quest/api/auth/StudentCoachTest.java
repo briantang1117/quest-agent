@@ -24,11 +24,12 @@ class StudentCoachTest {
     @Autowired MockMvc mvc; @Autowired JdbcTemplate db; @Autowired ObjectMapper json;
     @org.springframework.test.context.bean.override.mockito.MockitoBean com.quest.api.coach.CoachAiClient ai;
     static final String PASSWORD="Initial-password-123";
-    @BeforeEach void setup(){
+    static String h2(String sql){return sql.replace("TIMESTAMPTZ","TIMESTAMP WITH TIME ZONE").replace("embedding vector","embedding TEXT").replace("AND vector_dims(embedding)=embedding_dimensions","");}
+    @BeforeEach void setup() throws Exception {
         db.execute("DROP ALL OBJECTS");db.execute("CREATE ROLE quest_app");db.execute("CREATE ROLE quest_ai");db.execute("CREATE SEQUENCE app_user_id_seq");db.execute("CREATE SEQUENCE audit_log_id_seq");
         db.execute("CREATE TABLE app_user(id BIGSERIAL PRIMARY KEY,username VARCHAR(64) UNIQUE NOT NULL,password_hash VARCHAR(128) NOT NULL,display_name VARCHAR(128) NOT NULL,status VARCHAR(16) DEFAULT 'active',created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
         db.execute("CREATE TABLE audit_log(id BIGSERIAL PRIMARY KEY,actor BIGINT,action VARCHAR(64),target_type VARCHAR(64),target_id VARCHAR(64),before_data JSONB,after_data JSONB,ip VARCHAR(45),user_agent TEXT,trace_id VARCHAR(64),ai_job_id BIGINT,created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");TestUserSchema.applyV4(db);
-        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql"))new ResourceDatabasePopulator(new ClassPathResource("db/migration/"+file)).execute(db.getDataSource());
+        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
         var bcrypt=new BCryptPasswordEncoder();for(String name:List.of("admin","alice","bob"))db.update("INSERT INTO app_user(username,password_hash,display_name,account_type,must_change_password) VALUES (?,?,?,?,FALSE)",name,bcrypt.encode(PASSWORD),name,name.equals("admin")?"admin":"student");
         var chatReply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"我们一起理解这个知识点。\"}");
         // Service 走带归因的三参重载，两参重载仅为兼容保留，两者都要打桩。
@@ -66,6 +67,144 @@ class StudentCoachTest {
         mvc.perform(get("/api/v1/me/study-preference").header("Authorization","Bearer "+token("admin"))).andExpect(status().isForbidden());
         preference(alice,"vocational_aptitude");var s=create(alice,UUID.randomUUID(),"practice");assertThat(s.get("messages").toString()).contains("暂无");
     }
+    private String stream(String token,UUID session,Object input)throws Exception{
+        var result=mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+token)
+            .contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isOk()).andReturn();
+        result.getAsyncResult(5000);
+        var completed=mvc.perform(asyncDispatch(result)).andExpect(status().isOk()).andReturn();
+        return completed.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+    }
+    private JsonNode done(String stream){
+        for(String block:stream.split("\n\n"))if(block.startsWith("event:done\n"))return json.readTree(block.substring(block.indexOf("data:")+5));
+        throw new AssertionError("没有完成事件: "+stream);
+    }
+    private void streamReply(String text)throws Exception{
+        org.mockito.Mockito.doAnswer(call->{
+            java.util.function.Consumer<String> sink=call.getArgument(3);
+            sink.accept(text.substring(0,1));sink.accept(text.substring(1));
+            return json.readTree("{\"items\":[{\"action\":\"chat\",\"label\":\"举例\",\"text\":\"请举个例子\"},{\"action\":\"next\",\"label\":\"下一题\"}]}");
+        }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+    @Test void unifiedAnswerStreamPersistsOnceAndKeepsSuggestions()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);seed("vocational_aptitude","published",false);
+        UUID session=UUID.randomUUID();JsonNode initial=create(alice,session,"practice");String q=initial.path("currentQuestion").path("id").asText();
+        streamReply("流式权威讲解");
+        var input=new com.quest.api.coach.StudentCoachService.Turn(UUID.randomUUID(),"answer","",q,List.of("A"));
+        String events=stream(alice,session,input);JsonNode result=done(events);
+        assertThat(events).contains("event:state","event:delta");
+        assertThat(events.indexOf("event:state")).isLessThan(events.indexOf("event:delta"));
+        assertThat(result.path("processing").asBoolean()).isFalse();
+        assertThat(result.path("result").path("correct").asBoolean()).isFalse();
+        var last=result.path("messages").get(result.path("messages").size()-1);
+        assertThat(last.path("text").asText()).isEqualTo("流式权威讲解");
+        assertThat(last.path("suggestions").size()).isEqualTo(2);
+        var saved=json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+        assertThat(saved.path("messages")).isEqualTo(result.path("messages"));
+        assertThat(done(stream(alice,session,input))).isEqualTo(result);
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.times(1)).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.never()).route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        turnCount(0);
+    }
+    @Test void unifiedChatUsesShortRouteThenOneStreamAndNeverRevealsUnansweredSecrets()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);seed("vocational_aptitude","published",false);
+        UUID session=UUID.randomUUID();create(alice,session,"practice");
+        org.mockito.Mockito.when(ai.route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"\"}"));
+        streamReply("概念解释");
+        JsonNode result=done(stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","这个词什么意思")));
+        assertThat(result.toString()).doesNotContain("PRIVATE_EXPLANATION","PRIVATE_SOURCE");
+        var last=result.path("messages").get(result.path("messages").size()-1);
+        assertThat(last.path("text").asText()).isEqualTo("概念解释");
+        // 未作答时不能给下一题，即使模型推荐也过滤。
+        assertThat(last.path("suggestions").toString()).doesNotContain("next");
+        var capture=org.mockito.ArgumentCaptor.forClass(Object.class);
+        org.mockito.Mockito.verify(ai).route(capture.capture(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        assertThat(json.writeValueAsString(capture.getValue())).doesNotContain("PRIVATE_EXPLANATION","answer_keys");
+        turnCount(0);
+    }
+    @Test void brokenStreamKeepsGradeAndDropsPartialWithoutRegenerating()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);
+        UUID session=UUID.randomUUID();JsonNode initial=create(alice,session,"practice");String q=initial.path("currentQuestion").path("id").asText();
+        org.mockito.Mockito.doAnswer(call->{
+            // 付费生成前，判分已经写库；哪怕网络断开也不会丢失。
+            var saved=json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+            assertThat(saved.path("result").path("answerKeys").get(0).asText()).isEqualTo("B");
+            java.util.function.Consumer<String> sink=call.getArgument(3);sink.accept("PRIVATE_PARTIAL");
+            throw new UserFailure(503,50204,"PRIVATE_UPSTREAM");
+        }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var input=Map.of("requestId",UUID.randomUUID(),"action","answer","text","","questionId",q,"keys",List.of("B"));
+        String events=stream(alice,session,input);JsonNode result=done(events);
+        assertThat(events).contains("event:reset");
+        assertThat(result.path("result").path("correct").asBoolean()).isTrue();
+        assertThat(result.path("messages").toString()).doesNotContain("PRIVATE_PARTIAL","PRIVATE_UPSTREAM");
+        assertThat(done(stream(alice,session,input))).isEqualTo(result);
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.times(1)).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+    @Test void parallelTurnsAreRejectedBeforeAnotherModelCall()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.when(ai.route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{entered.countDown();assertThat(release.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();return json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"\"}");});
+        streamReply("回答正文");
+        var input=Map.of("requestId",UUID.randomUUID(),"action","chat","text","你好");
+        var first=mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isOk()).andReturn();
+        try{
+            assertThat(entered.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isConflict());
+            var second=Map.of("requestId",UUID.randomUUID(),"action","next","text","");
+            mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(second))).andExpect(status().isConflict());
+        }finally{release.countDown();first.getAsyncResult(5000);}
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.times(1)).route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+    }
+    @Test void cancelledGenerationKeepsCommittedGradeAndUnlocksSession()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);UUID session=UUID.randomUUID();var initial=create(alice,session,"practice");
+        org.mockito.Mockito.doAnswer(call->{com.quest.api.coach.CoachStreamControl control=call.getArgument(4);control.close();control.check();return null;}).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var input=Map.of("requestId",UUID.randomUUID(),"action","answer","text","","questionId",initial.path("currentQuestion").path("id").asText(),"keys",List.of("B"));
+        stream(alice,session,input);
+        assertThat(db.queryForObject("SELECT processing_request FROM student_coach_session WHERE id=?",UUID.class,session)).isNull();
+        var saved=json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+        assertThat(saved.path("result").path("correct").asBoolean()).isTrue();
+        assertThat(db.queryForObject("SELECT status FROM student_coach_turn WHERE session_id=?",String.class,session)).isEqualTo("done");
+    }
+    @Test void logoutDuringGenerationDoesNotLeaveProcessingClaim()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);UUID session=UUID.randomUUID();var initial=create(alice,session,"practice");
+        org.mockito.Mockito.doAnswer(call->{
+            mvc.perform(post("/api/v1/auth/logout").header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+            throw new UserFailure(503,50204,"stream failed");
+        }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var input=Map.of("requestId",UUID.randomUUID(),"action","answer","text","","questionId",initial.path("currentQuestion").path("id").asText(),"keys",List.of("B"));
+        stream(alice,session,input);
+        assertThat(db.queryForObject("SELECT processing_request FROM student_coach_session WHERE id=?",UUID.class,session)).isNull();
+        assertThat(json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session)).path("result").path("correct").asBoolean()).isTrue();
+    }
+    @Test void expiredClaimIsReapedWithoutReplayingPaidOperation()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");UUID old=UUID.randomUUID();
+        db.update("INSERT INTO student_coach_turn(id,session_id,request_id,request_hash,status,created_at) VALUES (?,?,?,?,'processing',?)",UUID.randomUUID(),session,old,"old",java.time.OffsetDateTime.now().minusMinutes(10));
+        db.update("UPDATE student_coach_session SET processing_request=? WHERE id=?",old,session);
+        var result=done(stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","next","text","")));
+        assertThat(result.path("processing").asBoolean()).isFalse();
+        assertThat(db.queryForObject("SELECT status FROM student_coach_turn WHERE request_id=?",String.class,old)).isEqualTo("failed");
+    }
+    @Test void clientDisconnectReleasesClaimInsteadOfLeavingSessionStuck()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        // 客户端在生成过程中断开：不能把会话永久留在 processing。
+        org.mockito.Mockito.doAnswer(call->{
+            com.quest.api.coach.CoachStreamControl control=call.getArgument(4);
+            control.close();
+            control.check();
+            return null;
+        }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.when(ai.route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any()))
+            .thenReturn(json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"\"}"));
+        stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","判断推理主要考什么"));
+        assertThat(db.queryForObject("SELECT processing_request FROM student_coach_session WHERE id=?",UUID.class,session)).isNull();
+    }
+    @Test void streamIsPrivateAndLegacyIndependentExplainIsRemoved()throws Exception{
+        String alice=token("alice"),bob=token("bob");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var input=Map.of("requestId",UUID.randomUUID(),"action","chat","text","你好");
+        mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+bob).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isNotFound());
+        mvc.perform(post("/api/v1/coach/sessions/"+session+"/turns/stream").header("Authorization","Bearer "+token("admin")).contentType("application/json").content(json.writeValueAsString(input))).andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/coach/sessions/"+session+"/explain").header("Authorization","Bearer "+alice)).andExpect(status().isNotFound());
+    }
+
     @Test void quickSuggestionsComeFromBackendAndUnsafeOnesAreDropped()throws Exception{
         String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);seed("vocational_aptitude","published",false);
         // 两道题：出题后仍有未练过的题，next 建议才有意义。

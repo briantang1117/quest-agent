@@ -12,15 +12,23 @@ from app.api.coach import router as coach_router
 from app.api.pdf_import import router as pdf_import_router
 from app.api.public_import import router as public_import_router
 from app.api.routes import router
+from app.api.syllabus import router as syllabus_router
 from app.core.config import Settings
 from app.core.errors import ServiceError, error_response
 from app.core.security import NonceStore, authenticate
 from app.llm.base import LLMProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
+from app.providers.ark import ArkEmbeddingProvider
 from app.providers.deepseek import DeepSeekSearchProvider
 
 
-def create_app(settings: Settings | None = None, *, provider: LLMProvider | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    provider: LLMProvider | None = None,
+    embedding_provider: ArkEmbeddingProvider | None = None,
+    search: DeepSeekSearchProvider | None = None,
+) -> FastAPI:
     config = settings if settings is not None else Settings()
 
     @asynccontextmanager
@@ -28,8 +36,11 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
         application.state.provider = provider
         if provider is None and config.llm_configured:
             application.state.provider = OpenAICompatibleProvider(config)
-        application.state.search_provider = None
+        application.state.search_provider = search
+        application.state.embedding_provider = embedding_provider
         try:
+            if embedding_provider is None and config.embedding_configured:
+                application.state.embedding_provider = ArkEmbeddingProvider(config)
             if config.search_configured:
                 application.state.search_provider = DeepSeekSearchProvider(config)
             application.state.candidate_graph = (
@@ -54,6 +65,8 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
             application.state.extraction_graph = None
             application.state.candidate_graph = None
             application.state.coach_graph = None
+            if application.state.embedding_provider is not None:
+                await application.state.embedding_provider.aclose()
             if application.state.search_provider is not None:
                 await application.state.search_provider.aclose()
             if application.state.provider is not None:
@@ -70,6 +83,7 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
     )
     nonces = NonceStore()
     application.state.provider = None
+    application.state.embedding_provider = None
     application.state.extraction_graph = None
 
     @application.middleware("http")
@@ -110,6 +124,7 @@ def create_app(settings: Settings | None = None, *, provider: LLMProvider | None
     application.include_router(coach_router)
     application.include_router(public_import_router)
     application.include_router(pdf_import_router)
+    application.include_router(syllabus_router)
     return application
 
 

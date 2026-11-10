@@ -37,12 +37,30 @@ public class ApiExceptionHandler {
     }
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiResponse<Void>> unexpected(Exception exception, HttpServletRequest request) {
+        if (isClientGone(exception)) {
+            // 浏览器断开/刷新导致写响应失败，不是服务端故障；响应已不可用，无法再写JSON。
+            LOG.debug("Client disconnected, traceId={}", TraceFilter.traceId(request));
+            return null;
+        }
         if (exception instanceof ErrorResponse response) {
             int status = response.getStatusCode().value();
             return error(status, status * 100, "Request failed", request);
         }
         LOG.error("Unhandled request failure, traceId={}", TraceFilter.traceId(request), exception);
         return error(500, 50000, "Internal server error", request);
+    }
+    /** 沿 cause 链识别客户端主动断开，避免把正常断连记为未处理异常。 */
+    private static boolean isClientGone(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.springframework.web.context.request.async.AsyncRequestNotUsableException) return true;
+            if (cause instanceof org.apache.catalina.connector.ClientAbortException) return true;
+            String name = cause.getClass().getName();
+            if (name.equals("org.apache.catalina.connector.ClientAbortException")) return true;
+            if (cause.getMessage() != null && cause.getMessage().contains("Broken pipe")) return true;
+            if (cause instanceof java.io.IOException && cause.getMessage() != null
+                && cause.getMessage().contains("Connection reset")) return true;
+        }
+        return false;
     }
     private ResponseEntity<ApiResponse<Void>> error(int status, int code, String message, HttpServletRequest request) {
         return ResponseEntity.status(status).body(ApiResponse.error(code, message, TraceFilter.traceId(request)));
