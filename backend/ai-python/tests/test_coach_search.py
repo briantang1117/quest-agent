@@ -142,3 +142,24 @@ def test_answer_never_leaks_search_service_error_text():
             {"scope": "student", "subject": "administrative_aptitude", "message": "最新政策"},
         )
     assert "SECRET_UPSTREAM_TOKEN" not in response.text
+
+
+def test_search_hits_are_expanded_instead_of_pydantic_field_tuples():
+    # 回归：SearchResult 是模型对象，迭代它会得到字段名/值，不是命中列表。
+    provider = Provider()
+    search = Search(hits=[("人社部公告", "https://example.com/notice", "公告摘要正文")])
+    with TestClient(create_app(settings(), provider=provider, search=search)) as client:
+        send(
+            client,
+            {
+                "scope": "student",
+                "subject": "administrative_aptitude",
+                "message": "今年最新考试政策",
+            },
+        )
+    prompt = json.dumps(provider.messages[0], ensure_ascii=False)
+    assert "人社部公告" in prompt
+    assert "公告摘要正文" in prompt
+    # 不得把 Pydantic 对象 repr 或字段名当成标题/来源塞进提示词。
+    assert "SearchHit(" not in prompt
+    assert "retrieved_at" not in prompt

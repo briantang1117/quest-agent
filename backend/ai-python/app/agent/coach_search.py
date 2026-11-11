@@ -80,7 +80,8 @@ async def retrieve(search, text: str) -> str | None:
         return None
     if not result.results:
         return None
-    return search_context(result)
+    # SearchResult 是 Pydantic 模型，直接迭代只会得到字段名/值；必须展开命中列表。
+    return search_context(result.results)
 
 
 __all__ = ["needs_search", "search_context", "retrieve"]
