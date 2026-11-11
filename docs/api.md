@@ -1,62 +1,148 @@
-# 接口契约与实现范围
+# 接口目录
 
-本文件定义跨服务约定；实际已实现接口以各模块路由和测试为准。完整一期接口列表见原方案 §11，不能将列表当作当前可调用接口。
+更新：2026-11-11。实现事实依据当前源码、依赖清单和测试核对；不以旧文档推定运行状态。
 
-## Java 通用响应
+所有业务普通JSON使用 `{code,message,data,traceId}`，下载与SSE除外。具体字段以Controller DTO及shared协议为准。本目录从当前路由声明整理，不宣称已经真实环境联调。
 
-```json
-{"code":0,"message":"成功","data":{},"traceId":"请求链路标识"}
-```
+## UserController
 
-业务接口前缀 `/api/v1`，时间使用 ISO-8601 UTC。分页 `{list,total,page,size}`。生产业务接口需要 `Authorization: Bearer <jwt>`。健康探针遵循 Spring Actuator 原生格式，不套业务 envelope。
+源码：[UserController.java](../backend/api-java/src/main/java/com/quest/api/auth/UserController.java)
 
-错误分层：4xxxx 请求或权限、5xxxx 服务故障、6xxxx 业务规则。HTTP 状态也必须正确，不把所有失败返回 200。
+| 方法  | 路径                                      |
+| ----- | ----------------------------------------- |
+| POST  | `/api/v1/auth/login`                      |
+| GET   | `/api/v1/auth/me`                         |
+| POST  | `/api/v1/auth/logout`                     |
+| POST  | `/api/v1/auth/change-password`            |
+| GET   | `/api/v1/admin/users`                     |
+| POST  | `/api/v1/admin/users`                     |
+| PATCH | `/api/v1/admin/users/{id}/status`         |
+| POST  | `/api/v1/admin/users/{id}/reset-password` |
 
-## 服务间 HMAC
+## AiCallAuditController
 
-Python `/internal/*` 不对浏览器开放。Java 调用时发送：
+源码：[AiCallAuditController.java](../backend/api-java/src/main/java/com/quest/api/coach/AiCallAuditController.java)
 
-| Header | 值 |
-|---|---|
-| `X-Service-Token` | 独立服务身份 token |
-| `X-Timestamp` | UTC Unix 秒的十进制字符串 |
-| `X-Nonce` | 每次请求唯一的随机字符串 |
-| `X-Signature` | 以下签名的小写十六进制结果 |
+| 方法 | 路径                          |
+| ---- | ----------------------------- |
+| GET  | `/api/v1/admin/ai-calls`      |
+| GET  | `/api/v1/admin/ai-calls/{id}` |
 
-```text
-bodyHash = SHA256(实际发送的原始请求字节).hexdigest()
-canonical = timestamp + "\n" + nonce + "\n" + UPPER(method) + "\n" + path + "\n" + bodyHash
-signature = HMAC-SHA256(INTERNAL_HMAC_SECRET, canonical).hexdigest()
-```
+## StudentCoachController
 
-path 为路由路径，不含 host。JSON 序列化后再签名，不能接收方重排 JSON 后验签。修改请求体、方法或路径均应拒绝。5 分钟有效窗口，nonce 在窗口内不得复用。多副本必须使用共享 Redis 原子 nonce 存储；当前进程内防重放不能作为多副本部署的充分条件。
+源码：[StudentCoachController.java](../backend/api-java/src/main/java/com/quest/api/coach/StudentCoachController.java)
 
-## Agent SSE 目标协议
+| 方法   | 路径                                       |
+| ------ | ------------------------------------------ |
+| GET    | `/api/v1/me/study-preference`              |
+| PUT    | `/api/v1/me/study-preference`              |
+| GET    | `/api/v1/coach/sessions`                   |
+| POST   | `/api/v1/coach/sessions`                   |
+| GET    | `/api/v1/coach/sessions/{id}`              |
+| DELETE | `/api/v1/coach/sessions/{id}`              |
+| POST   | `/api/v1/coach/sessions/{id}/turns`        |
+| POST   | `/api/v1/coach/sessions/{id}/turns/stream` |
 
-业务路径最终为 `POST /api/v1/agent/sessions/{id}/messages`，当前架构底座不宣称已打通此链路。浏览器用 fetch POST，不用 EventSource；无自动重试，用户主动重试避免重复付费。
+## LearningMaterialController
 
-```text
-event: token
-data: {"delta":"根据"}
+源码：[LearningMaterialController.java](../backend/api-java/src/main/java/com/quest/api/materials/LearningMaterialController.java)
 
-event: tool_call
-data: {"name":"parse_text_to_questions","status":"running"}
+| 方法 | 路径                                    |
+| ---- | --------------------------------------- |
+| POST | `/api/v1/coach/sessions/{id}/materials` |
+| GET  | `/api/v1/study/materials`               |
+| GET  | `/api/v1/study/materials/{id}`          |
+| POST | `/api/v1/study/materials/{id}/retry`    |
+| GET  | `/api/v1/study/materials/{id}/download` |
 
-event: card
-data: {"type":"question_preview","payload":{}}
+## MaterialInternalController
 
-event: done
-data: {"messageId":"...","usage":{"tokens":1234}}
+源码：[MaterialInternalController.java](../backend/api-java/src/main/java/com/quest/api/materials/MaterialInternalController.java)
 
-```
+| 方法 | 路径                               |
+| ---- | ---------------------------------- |
+| POST | `/internal/materials/outbox/claim` |
+| POST | `/internal/materials/outbox/ack`   |
+| POST | `/internal/materials/execute`      |
 
-客户端应正确处理 UTF-8 分包、CRLF、空行、注释和多行 data；中途断流与收到 done 不同，不能静默标记回答成功。
+## PublicBankController
 
-## 题目不变量
+源码：[PublicBankController.java](../backend/api-java/src/main/java/com/quest/api/publicbank/PublicBankController.java)
 
-- `single_choice` / `multiple_choice`；2–8 个选项，连续唯一 A–H。
-- 题干去空白后非空，最多 5000 字符。
-- 单选恰好一个答案，多选至少两个，答案必须为选项子集且不重复。
-- 至少一个有效知识点编码；难度为整数 1–5。
-- AI 结果强制草稿；只有 Java 审核/发布流程可以发布。
-- 多选正确性按集合一致判断，顺序不影响，少选/多选均不算全对；领域判分器已预留显式 `partialScore` 参数，未配置少选分时应传 0，具体试卷评分策略由后续业务接入。
+| 方法   | 路径                                               |
+| ------ | -------------------------------------------------- |
+| GET    | `/api/v1/admin/public-banks`                       |
+| GET    | `/api/v1/admin/public-banks/{id}`                  |
+| POST   | `/api/v1/admin/public-banks`                       |
+| POST   | `/api/v1/admin/public-banks/{id}/imports`          |
+| GET    | `/api/v1/admin/public-banks/{id}/imports`          |
+| POST   | `/api/v1/admin/public-banks/{id}/pdf-imports`      |
+| GET    | `/api/v1/admin/public-banks/{id}/documents`        |
+| GET    | `/api/v1/admin/public-banks/{id}/questions`        |
+| GET    | `/api/v1/admin/public-banks/{id}/question-summary` |
+| POST   | `/api/v1/admin/public-questions/{id}/withdraw`     |
+| DELETE | `/api/v1/admin/public-questions/{id}`              |
+| POST   | `/api/v1/admin/public-banks/{id}/publish`          |
+| POST   | `/api/v1/admin/public-documents/{id}/start`        |
+| GET    | `/api/v1/admin/public-documents/{id}/file`         |
+| GET    | `/api/v1/admin/public-imports/{id}`                |
+| GET    | `/api/v1/admin/public-questions/{id}`              |
+| PUT    | `/api/v1/admin/public-questions/{id}`              |
+| POST   | `/api/v1/admin/public-questions/{id}/confirm`      |
+| POST   | `/api/v1/admin/public-questions/{id}/publish`      |
+
+## SyllabusController
+
+源码：[SyllabusController.java](../backend/api-java/src/main/java/com/quest/api/syllabus/SyllabusController.java)
+
+| 方法 | 路径                                       |
+| ---- | ------------------------------------------ |
+| GET  | `/api/v1/admin/syllabi`                    |
+| POST | `/api/v1/admin/syllabi`                    |
+| GET  | `/api/v1/admin/syllabi/{id}`               |
+| PUT  | `/api/v1/admin/syllabi/{id}`               |
+| POST | `/api/v1/admin/syllabi/{id}/publish`       |
+| POST | `/api/v1/admin/syllabi/{id}/archive`       |
+| POST | `/api/v1/admin/syllabi/{id}/retry-review`  |
+| POST | `/api/v1/admin/syllabi/{id}/rebuild-index` |
+| GET  | `/api/v1/admin/syllabi/{id}/file`          |
+| GET  | `/api/v1/study/syllabus`                   |
+
+## SystemController
+
+源码：[SystemController.java](../backend/api-java/src/main/java/com/quest/api/system/SystemController.java)
+
+| 方法 | 路径                  |
+| ---- | --------------------- |
+| GET  | `/api/v1/system/info` |
+
+## Python内部能力
+
+均由Java经内部鉴权调用；不对浏览器开放。`GET /health/live`为存活检查，Swagger/OpenAPI路由关闭。
+
+| 方法 | 路径 | 定义 |
+| ---- | ---- | ---- |
+
+| POST | `/internal/coach-turn` | [coach.py](../backend/ai-python/app/api/coach.py) |
+
+| POST | `/internal/coach-route` | [coach.py](../backend/ai-python/app/api/coach.py) |
+
+| POST | `/internal/coach-explain` | [coach.py](../backend/ai-python/app/api/coach.py) |
+
+| POST | `/internal/material-generate` | [materials.py](../backend/ai-python/app/api/materials.py) |
+
+| POST | `/internal/pdf-inspect` | [pdf_import.py](../backend/ai-python/app/api/pdf_import.py) |
+
+| POST | `/internal/public-import` | [public_import.py](../backend/ai-python/app/api/public_import.py) |
+
+| POST | `/internal/extract` | [routes.py](../backend/ai-python/app/api/routes.py) |
+
+| POST | `/internal/syllabus-inspect` | [syllabus.py](../backend/ai-python/app/api/syllabus.py) |
+
+| POST | `/internal/syllabus-review` | [syllabus.py](../backend/ai-python/app/api/syllabus.py) |
+
+| POST | `/internal/syllabus-embed` | [syllabus.py](../backend/ai-python/app/api/syllabus.py) |
+
+## 流式与身份
+
+Java公开Coach SSE事件为state/delta/tool_status/reset/done及error；Python内部还有sources/suggestions/tool_audit，Java校验后保存或审计，不能原样透传网页全文。业务会话/资料所有者从Java已鉴权身份取得，不接受自由用户ID绕过。Java仅三个精确资料内部POST使用HMAC，其余internal默认拒绝。

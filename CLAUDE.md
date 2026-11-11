@@ -1,121 +1,28 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+更新：2026-11-11。实现事实依据当前源码、依赖清单和测试核对；不以旧文档推定运行状态。
 
-## 当前产品约定与优先资料
+沟通、文档和新增注释用简体中文；代码标识符延续原风格。本项目为知序个人本机AI学习系统。先看README、docs/项目现状.md、docs/架构说明.md；旧进度不作实现依据，需检查源码、配置、测试与真实运行结果。
 
-沟通、文档和新增注释使用简体中文，代码标识符保持原有风格。
+## 工程与边界
 
-原始需求为`AI刷题平台-第一期方案.md`，后续决策以日期较新的范围为准。**当前优先读`docs/superpowers/plans/2026-11-08-public-pdf-import.md`：用户改为先做Admin建设公共题库/PDF导入，个人多私库暂缓。** 原私有题库计划仍约束用户个人内容隔离，不再把“本期无公共库/Admin只能开户”作为全局限制：
+- Java为backend Maven多模块：common领域契约/判分，api-java唯一业务HTTP与业务写库边界，worker-java资料MQ中继/消费者。IDEA可能仅打开backend/api-java，遵守其局部CLAUDE.md。Java27/Spring Boot4/Jackson3，构建用backend/mvnw，不改公司全局Maven配置。
+- Python独立backend/ai-python：FastAPI内部服务、模型/工具/PDF能力，不写业务表；使用uv与自身.env。OpenAI-compatible保持供应商中立，工具默认开启不代表可重试付费故障。
+- 前端独立frontend：pnpm workspace，PC Vue/Arco、移动Vue/Vant、shared协议；遵守frontend/CLAUDE.md。移动仍是骨架，不能用假数据冒充接线完成。
+- 应用本机运行，NAS仅中间件。不要默认部署应用到NAS、启动根Compose或重复bootstrap。已有环境不复制模板覆盖；不要输出秘密文件。
 
-- Admin创建普通用户、不开放自助注册；现在新增公共题库管理/PDF导入/草稿审核发布职责。Admin仍不能刷题，也不能因此读取用户个人私有题库、作答或对话，不做全局内容权限绕过。
-- 优先公共客观题库，供普通用户使用已发布内容；未审核草稿/PDF原文件不匿名开放。普通用户多个私库作为后续方向，不跨用户共享私人数据。
-- 当前方向：事业编A类/职测、上海公务员市考/行测。本期只做单选、多选；综应、申论仅为未来方向，不增加主观题功能。
-- 私有隔离必须覆盖数据库查询/关联、Agent工具、检索/向量、缓存、MQ事件、S3预签名授权和统计接口，不能只隐藏前端菜单。
-- 用户模块第一阶段已进入本地实现/测试：登录、强制改密、Admin开户/启停/重置和数据库会话；最新状态见`docs/用户模块开发记录.md`和`docs/用户模块接口与验收.md`。**NAS V4已授权执行核验，用户已自行初始化首个Admin并反馈成功，不重新执行bootstrap**，用户现有IDE服务需要自行重启后才能加载新代码；个人题库模型/CRUD/用量统计仍未实现。
+## 实现纪律
 
-全局架构见`docs/架构说明.md`；启动入口见`docs/本地开发启动.md`；中间件验证见`docs/群晖服务验证.md`。旧交接/进度中的历史限制可能已解除，以当前代码、最新局部文档和真实命令为准。
+先看git status，保留其他IDE/会话未提交修改，不回滚、不批量杀或重启用户服务。实现状态由代码和测试证明；建表、配置地址、适配器、局部测试均不等于真实业务联调通过。
 
-## 三个独立开发工程
+Admin管理公共题库/考纲/用户及当前已授权系统审计；Student学习/会话/资料必须按所有者隔离。单选/多选判分由Java完成；未作答题不能向外部工具搜答案。模型不得发布题目、改权限或替代权威答案。
 
-应用在Mac本机运行，群晖仅运行PG、Redis、SILO和RocketMQ。**不要默认向群晖部署应用，也不要启动根deploy Compose重复创建中间件。**
+普通业务JSON为{code,message,data,traceId}；SSE终态、错误、截断和取消要同时考虑Java/Python/shared。工具参数不进正文，最终JSON不完整不能保存半截成功消息。工具结果为不可信资料。接口/存储UTC，页面和业务日Asia/Shanghai。
 
-- Java为`backend/` Maven多模块：common提供统一响应和纯领域契约；api-java是唯一业务HTTP入口/业务库写入方；worker-java是独立后台进程。用户IDEA实际只打开`backend/api-java/`并关联common；必须遵守更具体的`backend/api-java/CLAUDE.md`和`docs/IDEA启动配置.md`。
-- Python独立工程为`backend/ai-python/`，PyCharm打开此目录。FastAPI内部服务+LangGraph受控编排，Provider保持OpenAI-compatible供应商中立，不强制换Anthropic SDK。Python不直接写业务表，未来仅写派生索引/经Java提交草稿。
-- 前端独立工程为`frontend/`，WebStorm打开此目录。pnpm workspace包含PC（Vue3/Arco）、移动Agent（Vue3/Vant4）及shared协议/HTTP/SSE/Markdown安全渲染。根package.json仅为历史命令转发，实际依赖根和锁文件在frontend。
+日常Flyway关闭；不改已执行旧迁移，不重建共享数据库。新增迁移文件需同步API resources和deploy/migrations；共享数据库/Topic/远程资源写入须用户明确授权，不能由旧文档推断。本机可自主做已授权的可逆改造，现有NAS磁盘告警不擅自删文件或改阈值。
 
-IDEA、PyCharm、WebStorm会话可能同时修改不同子工程。先看git status，尊重其他会话变更，别覆盖/回滚它们；跨子工程改动先明确接口边界。不要批量停止用户正在IDE里运行的进程。
+## 验证与文档
 
-## 构建、测试和启动
+命令见docs/本地开发启动.md。按变更范围跑测试，不用脚本package跳过测试的结果宣称通过。只改文档时核对链接、文件引用、迁移镜像副本及配置契约；不为了更新状态而调用真实付费模型或远程写入。
 
-以下命令从仓库根执行，除非注释另有说明。
-
-### Java
-
-Java27（非Preview）、Maven3.10.0、Spring Boot4.1.2、MyBatis-Plus Boot4 starter；实际版本以POM为准。Jackson3包为tools.jackson.*，不要照抄Boot3包路径。
-
-```bash
-./backend/mvnw -v
-./backend/mvnw -B -ntp clean verify
-# API及其依赖，安装父POM/common，适用于IDE只导入API的情形
-./backend/mvnw -B -ntp -pl api-java -am clean install
-# 单测试类；其他reactor模块允许没有匹配测试
-./backend/mvnw -B -ntp -pl api-java -am -Dtest=ApiContractTest -Dsurefire.failIfNoSpecifiedTests=false test
-# 单测试方法
-./backend/mvnw -B -ntp -pl api-java -am '-Dtest=ApiContractTest#anonymousBusinessRequestIsDeniedWithEnvelope' -Dsurefire.failIfNoSpecifiedTests=false test
-# 本地启动（先打包，跳过测试，不代替verify）
-bash backend/scripts/start-api.sh
-bash backend/scripts/start-worker.sh
-```
-
-wrapper固定父POM、项目user/global settings与tools/repository缓存，隔离公司~/.m2/settings.xml；不要修改公司全局设置。项目JDK位于backend/tools/jdk/Contents/Home，外部JDK通过QUEST_JAVA_HOME指定。IDE导入器不保证执行wrapper，配置见API局部文档。当前无独立Java lint目标。
-
-原生IDEA Run/Debug：ApiApplication，JDK27，工作目录为backend（只打开api-java时是$PROJECT_DIR$/..），参数`--spring.profiles.active=deployment --spring.flyway.enabled=false`。common不能运行，不在整个reactor直接执行spring-boot:run。
-
-### Python
-
-```bash
-uv --directory backend/ai-python sync --group dev --frozen
-uv --directory backend/ai-python run pytest -q
-uv --directory backend/ai-python run pytest tests/test_extraction_graph.py -q
-uv --directory backend/ai-python run pytest tests/test_service.py -k liveness -q
-uv --directory backend/ai-python run ruff check --no-cache .
-uv --directory backend/ai-python run ruff format --no-cache --check .
-bash backend/ai-python/start.sh
-```
-
-本工程.env由启动脚本显式加载，Settings本身不自动读取.env。LangGraph抽取图由FastAPI lifespan编译：prepare→generate→validate，失败repair一次，最多两次模型调用；网络错误不自动重试。全程强制草稿，不自动发布。已有独立OCR/Embedding/Search/Fetch适配器、本地PDF预检、多来源证据组装与候选图；尚未接完整多来源HTTP/Java/PC工作流，未实现RAG索引、完整聊天Agent、checkpoint持久化或人工中断恢复；不使用Deep Agents。
-
-### 前端
-
-```bash
-pnpm --dir frontend install --frozen-lockfile
-pnpm --dir frontend test
-pnpm --dir frontend typecheck
-pnpm --dir frontend build
-pnpm --dir frontend --filter @quest/shared exec vitest run tests/sse.test.ts
-pnpm --dir frontend dev:pc
-pnpm --dir frontend dev:mobile
-```
-
-也可用frontend/start-pc.sh、start-mobile.sh和各工程.run配置。PC5173，移动5174/m/；各应用.env.local配置/gateway代理本机8080。dev监听0.0.0.0，局域网设备可通过前端代理访问后端；仅可信网络使用。Java/Python默认127.0.0.1，Python8000。正式同源配置VITE_API_BASE_URL=/，不要用开发代理路径。
-
-### 本地部署/启动配置测试（不改NAS）
-
-```bash
-uv run --with python-dotenv --with pyyaml --with pglast python -m unittest discover -s scripts/tests -v
-```
-
-此测试只验证配置/SQL语法与工具替身，不代表容器、消息发收、真实对象上传或数据库升级通过。
-
-## 跨服务契约和安全边界
-
-终端所有业务请求最终必须经Java鉴权；Python/internal/*不能直接对浏览器开放。当前Java内部路径默认denyAll，Java→Python业务代理尚未实现。
-
-Java业务响应为`{code,message,data,traceId}`，Actuator保留原生格式。Security过滤器和MVC异常处理各有错误输出路径；trace由TraceFilter贯穿响应/MDC。local profile关闭持久化，deployment readiness包含真实PG；local健康UP不能证明PG已接通。
-
-Python内部HMAC固定覆盖timestamp、nonce、HTTP method、path、原始body SHA256，5分钟窗口。当前nonce仅进程内、单worker，不能直接扩成多worker/副本就称安全。AI草稿必须验证题型/答案/知识点，平台Admin与个人导入的scope将在用户模块设计时重构，不能信任前端自报身份。
-
-SSE用fetch POST，不自动重试；done结束，error传播，无done的EOF视为截断。shared含UTF8分包/CRLF及Markdown XSS测试。修改协议同时考虑两个前端。
-
-存储/接口时间UTC；页面与按日使用统计采用Asia/Shanghai业务日边界。Embedding表当前1024维；模型/维度变更需新索引与重建，不能混用不同模型向量。
-
-## 本地配置、迁移与共享环境
-
-Java从backend工作目录导入.env.api.properties / .env.worker.properties；Python用自身.env；两端前端用各自.env.local。真实配置已生成，本机不要再复制模板覆盖；日常启动不得依赖父目录统一.env加载，也不要恢复Python包装Java的旧架构。SSH、PG超级用户与SILO root凭据不属于应用运行配置，勿读取整份秘密文件回显。
-
-群晖地址192.168.3.40：PG15432/quest、Redis16379、S3 19000、Console19001、MQ NameServer9876/Broker10911。账号运行使用quest_app，迁移使用quest_owner；Worker无owner凭据，Python无业务写权限。
-
-Flyway V1–V7已在用户逐项明确授权后执行成功，并验证权限/重复迁移。V6新增PDF批次原件表和任务关联字段，quest_ai实际访问被拒，原有1个公共库及旧数据摘要不变、旧向量仍1024维；模型任务处理未开启。**不编辑已执行旧迁移，不重建数据库；新增版本或共享资源写入另说明并获得授权**。SQL打包于API resources/db/migration，deploy/migrations仍有兼容副本，修改需同步检查。日常显式关闭Flyway；临时启动冒烟也禁用迁移。
-
-RocketMQ已注册，但NAS磁盘90%告警用户要求暂不处理，不提高阈值或删除文件；未验收消息发收。SILO两桶私有、应用认证通过，但ListAllMyBuckets仍允许，完整最小权限与真实对象写入尚待验证。Redis/MQ/S3地址配置不等于Java业务适配器已经接通。
-
-## 当前协作与下一阶段
-
-用户已自行启动API与PC；本次只读确认readiness及PC代理健康均200。后续修改不可因此自行终止/重启这些进程。
-
-当前优先公共题库多来源导入（PDF、图片、手机截图），用户模块已实现，个人多私库暂缓。接手阅读`docs/题库多来源导入-会话交接.md`与`docs/多来源导入证据层设计.md`。无原答案时先联网检索、保存来源/检索时间，再给出建议答案与解析，必须由导入人确认；查不到/来源冲突不能宣称核验成功，已有原答案/解析不可静默覆盖。首段HMAC单题文本导入、Java公共库/任务/版本确认发布和PC审核已本地实现，见`docs/公共题库联调与验收.md`。NAS V6已获明确授权执行并核验，批量文本层PDF上传/隔离预检/逐题队列及题库内容列表已接线，Python308测试通过。用户明确批准仅本机受信Admin调试使用Darwin RSS监控替代不可用RLIMIT_AS，仍保留CPU/超时/输出限制，不是生产硬隔离。全局任务处理`quest.public-import.enabled`仍默认关闭；页面明确开始PDF批次现通过独立有界异步执行器仅处理该批次，不需开启全局扫库、不自动重试或发布。用户定义一个题库=一份真题试卷，题号`source.question_no`为可空正整数，识别到原题号保留，人工可清空；已有来源回填无需重跑模型。首个13题批次经单独授权已生成13草稿未发布；新页面按钮需用户重启API加载后验收。扫描PDF/图片自动分段仍未完成。
-
-最新维护改造：PDF优先的DropdownButton+单题非结构化原文模型解析（不是手填结构化表单），统一题目列表，发布题先下架再编辑/删除，删除采用软删除。V7（deleted_at/deleted_by）已获用户明确授权执行核验，13题原数据摘要和10已确认/3已发布状态不变，删除字段均空；用户现在可自行重启API加载本版。禁止擅自执行后续迁移或下架/删除真实题目，当前状态见`docs/公共题库联调与验收.md`。
-
-**当前重点已转为PC个人中心与AI陪练**（用户明确：刷题是AI交互式出题/作答/判定，不是选试卷做题；移动端暂不做）。个人中心单选科目全局生效；学习空间带首句进入个人Agent，Agent按科目跨试卷从**已发布未删除**题中选题，Java确定性判分且答前不泄露答案，LLM只做意图与讲解、无自动重试。状态见`docs/个人Agent陪练联调与验收.md`，计划见`docs/superpowers/plans/2026-11-08-student-ai-coach.md`。**V8（学员偏好/会话/轮次三表）已获用户明确授权执行并核验**：三表为空、quest_app可访问、quest_ai被拒、旧业务数据摘要不变；后续迁移仍须另获授权。文本LLM调用已获用户允许，首版不用OCR/向量/检索。
+新增/变更完成后更新对应主题文档和docs/项目现状.md，未来工作写docs/下一阶段开发路线.md。不要重建大量每日交接/同主题重复计划；删除文档时修复链接与文档契约测试。

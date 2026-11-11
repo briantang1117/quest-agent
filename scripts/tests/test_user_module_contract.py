@@ -22,15 +22,14 @@ class UserModuleContractTests(unittest.TestCase):
         self.assertIn('proxy_set_header X-Quest-Client-IP $remote_addr;', config)
         self.assertNotIn('proxy_set_header X-Quest-Client-IP $http_', config)
 
-    def test_user_contract_has_no_public_registration_or_content_admin_permissions(self):
+    def test_user_contract_documents_current_identity_and_content_boundaries(self):
         text = (ROOT / 'docs/用户模块接口与验收.md').read_text()
-        self.assertIn('不提供', text)
-        self.assertIn('Admin和Student类型互斥', text)
-        self.assertIn('刷新后先请求/auth/me校验才恢复身份', text)
+        self.assertIn('不开放自助注册', text)
+        self.assertIn('Admin与Student角色互斥', text)
+        self.assertIn('刷新后调用 /auth/me', text)
         self.assertIn('不保存密码或信任缓存角色', text)
-        self.assertIn('首轮后台不包含题目', text)
-        self.assertIn('当前没有可靠私有库统计',
-                      (ROOT / 'docs/superpowers/plans/2026-11-07-user-module.md').read_text())
+        self.assertIn('公共题库', text)
+        self.assertIn('个人私库与用量统计尚未实现', text)
 
 
 if __name__ == '__main__':

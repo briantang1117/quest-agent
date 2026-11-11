@@ -1,40 +1,23 @@
-# 部署配置说明
+# 部署配置导航
 
-本目录为局域网集成环境底座，尚未完成容器集成验收。入口命令见根 README。
+更新：2026-11-11。实现事实依据当前源码、依赖清单和测试核对；不以旧文档推定运行状态。
 
-## 初始化顺序
+日常路径是本机应用+NAS中间件，见[本地启动](../docs/本地开发启动.md)。本目录提供部署材料；本轮未执行容器部署、远程写入或迁移。
 
-1. 新 PostgreSQL 数据卷首次启动执行 `postgres/init/001-bootstrap.sh`，创建 `quest_owner`、`quest_app`、`quest_ai` 和扩展。
-2. API 以独立 Flyway 账号 `quest_owner` 依次执行 `migrations/V*__*.sql`。
-3. Java 运行期连接使用 `quest_app`；AI 索引账号仅预留，不给当前 Python 服务传数据库管理员密码。
-4. Worker 当前仅架构骨架，未启动 Relay/消费者，不依赖一次 `depends_on` 就宣称 MQ 可靠就绪。
+| 路径                             | 用途与边界                                                  |
+| -------------------------------- | ----------------------------------------------------------- |
+| synology-postgres                | NAS独立PG16+pgvector，角色初始化与持久化                    |
+| synology-redis                   | NAS独立Redis7，密码/AOF/卷                                  |
+| synology-minio                   | 当前NAS对象存储方案：pgsty/silo固定版与摘要                 |
+| synology-rocketmq                | NAS单broker RocketMQ5.3.1，开发网络配置                     |
+| migrations                       | V1–V13兼容SQL副本，正式打包副本在API resources/db/migration |
+| docker-compose.yml               | 可选整栈样例，包含应用和中间件，不是默认开发启动方式        |
+| docker-compose.local-storage.yml | 旧本机对象存储叠加样例，使用不同MinIO发布版                 |
+| nas-minio                        | 旧MinIO模板，不是当前synology-minio/SILO配置                |
+| nginx/default.conf               | PC和/m静态资源、Java网关及代理来源头                        |
 
-初始化脚本仅适用于新卷。改 `.env` 不会自动变更已有数据库账号密码；已有环境应通过受控凭据轮换，不要删除数据卷来“修复”认证。
+已有环境不要重复创建中间件或覆盖数据卷。日常Flyway关闭；真实环境执行到了哪个版本必须查询Flyway历史，不从V13文件存在推断。本地SQL镜像副本需字节一致，不修改已执行旧迁移。角色/密码只放各自环境文件，运行账号不得借用owner/root。
 
-## 网络
+根Compose没有完整映射所有新增Search/Fetch/Embedding及资料Worker选项，不能把它视为已验收生产编排；若选择容器化需按实际功能补齐环境并验证。S3/Redis部署存在也不等于Java业务已接入它们。
 
-- Nginx 默认仅绑定 `127.0.0.1:8088`。
-- PostgreSQL、Redis、RocketMQ、Python 不发布宿主机端口。
-- `/api/` 仅转发 Java，关闭 SSE 缓冲；`/internal/` 不公开。
-- NAS MinIO 独立部署，S3:9000 要求终端和应用均可达。NAS 控制台默认只绑定 NAS localhost。
-- 正式局域网放行与后台 IP 白名单需上线前配置，当前 Compose 不等于完成生产安全加固。
-
-## 迁移限制
-
-- 迁移 SQL 已通过 PostgreSQL parser 静态语法检查，尚未在真实 PostgreSQL16/pgvector 实例执行。
-- `answer_record` 建立分区结构和默认分区。上线前实现月分区滚动创建、默认分区数据迁移、归档与告警。
-- 初始迁移不得在有业务数据的环境随意重写；后续变化应增加 V4、V5 等迁移。
-- 未安装 `pg_stat_statements`，这是可选运维扩展，需要 `shared_preload_libraries` 和数据库管理员配置，后续独立接入。
-
-## 真实验收清单
-
-- [ ] `docker compose config` 与镜像版本可拉取
-- [ ] 全新数据库迁移成功，API 二次重启不重复建表
-- [ ] `quest_ai` 写 `question` 被拒绝，读 `app_user` / `agent_message` 被拒绝
-- [ ] `quest_app` 不能 UPDATE/DELETE `question_version`、`audit_log`，不能修改 Flyway 历史
-- [ ] 未配置 LLM 时进程可存活，抽取返回明确 503
-- [ ] 浏览器无法访问 Python 内部端口
-- [ ] 消息 Topic 显式创建，后续完成发收和失败重试测试
-- [ ] NAS 桶策略、CORS、预签名上传下载、备份恢复演练
-
-没有编写任何自动删除数据卷或清空 NAS 的脚本。
+先使用各目录`docker compose config --quiet`检查配置；真正启动、建Topic、初始化卷权限、数据库升级和对象写入需单独执行，不能从“文档更新”推定完成。

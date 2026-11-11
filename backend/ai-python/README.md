@@ -1,61 +1,75 @@
-# 内部 AI 服务
+# Python 内部 AI 服务
 
-**独立开发入口见 [PyCharm开发.md](PyCharm开发.md)**：只打开本目录，使用自己的.env/.venv，运行bash start.sh，不依赖父目录配置。
+核对日期：2026-11-11。本文依据 `app/`、`tests/`、`pyproject.toml`、`uv.lock`、启动脚本与 Dockerfile 整理，不代表真实供应商、本机环境或 NAS 已通过本轮验收。
 
-Python 3.11+ / FastAPI + **LangGraph 1.2.20**。文本抽取实际使用StateGraph，不使用Deep Agents；保留供应商中立Provider。已有独立OCR/Embedding/Search/Fetch适配器，但尚未接完整导入HTTP工作流；无RAG索引、会话持久化或Agent SSE。
+项目全貌见[根 README](../../README.md)、[项目现状](../../docs/项目现状.md)、[架构说明](../../docs/架构说明.md)；启动顺序见[本地开发启动](../../docs/本地开发启动.md)，陪练工具协议见[陪练工具技术说明](../../docs/陪练工具技术说明.md)。
 
-多来源证据、无题号截图、原答案/原解析保护及缺答案联网建议见[证据层设计](../../docs/多来源导入证据层设计.md)。候选图所有结果都需导入人确认，搜索命中不等于正确性已经核验。已新增HMAC单题文本`/internal/public-import`及Java/PC首段接口，见[联调验收](../../docs/公共题库联调与验收.md)；NAS V5已获授权执行核验、任务处理仍默认关闭，尚未真实端到端联调，PDF/图片HTTP未开放。
+## 服务职责与接口
 
-## LangGraph 流程
+入口为 `app/main.py:create_app`。服务接受 Java 签名的内部请求，返回题目草稿、意图、讲解、考纲结果或资料内容；不连接业务数据库，不承担用户鉴权、选题、判分、发布或资料持久化。`scope` 是受信 Java 提供的上下文，不能作为浏览器自报权限的公开接口。
 
-`START → prepare → generate → validate → END`；校验失败分支为 `validate → repair → generate → validate`，最多2次模型调用。网络/供应商错误直接失败，不自动重试。
+| 路由                               | 实装行为与权限                                                               |
+| ---------------------------------- | ---------------------------------------------------------------------------- |
+| `GET /health/live`                 | 进程存活检查，无鉴权；不验证供应商或数据库就绪                               |
+| `POST /internal/extract`           | 管理员文本题目抽取，返回草稿                                                 |
+| `POST /internal/public-import`     | 管理员单题导入，重新检查题目边界、来源文本及原答案，返回草稿、警告与来源证据 |
+| `POST /internal/pdf-inspect`       | 管理员本地 PDF 预检与候选切分，不调用模型、OCR 或网络                        |
+| `POST /internal/coach-turn`        | 普通用户陪练意图与回复，使用编译后的 LangGraph                               |
+| `POST /internal/coach-route`       | 普通用户短 JSON 意图识别，不执行选题、判分或资料任务                         |
+| `POST /internal/coach-explain`     | 普通用户讲解 SSE，可使用只读搜索与网页抓取工具                               |
+| `POST /internal/syllabus-inspect`  | 管理员考纲 PDF 离线预检                                                      |
+| `POST /internal/syllabus-review`   | 管理员考纲 AI 整理，不启用、不发布                                           |
+| `POST /internal/syllabus-embed`    | 内部批量文本嵌入，契约接受 admin/student；返回向量，不写库                   |
+| `POST /internal/material-generate` | 普通用户从 Java 冻结的公开对话整理私人资料，返回标题与 Markdown              |
 
-图在FastAPI生命周期中编译一次，请求状态独立；结果强制草稿且待人工审核。保留原 `/internal/extract` 的HMAC、admin scope、请求/响应及错误码契约。没有发布/数据库写入工具，没有引入子代理或通用文件操作。
+路由与输入契约在 `app/api/`。内部接口统一要求 `X-Service-Token`、`X-Timestamp`、`X-Nonce`、`X-Signature`；HMAC-SHA256 签名原文依次为时间戳、nonce、大写 HTTP 方法、URL path、原始请求体 SHA256，以换行连接。时间窗口为 300 秒，拒绝重复鉴权头、重放及 query 参数。响应带 `X-Trace-Id`，错误不回显原始输入与密钥。内部认证未配置时拒绝服务；生产模式要求两项内部密钥分别至少 32 字符。Swagger/OpenAPI 路由关闭。详见 `app/core/security.py`、`app/core/config.py`。
 
-本次未实现checkpoint持久化、人工interrupt/resume或聊天Agent，不能把引入框架等同于这些能力已经可用。不配置外部LangSmith tracing，部署时也不要擅自启用可能上传题目原文的追踪环境变量。
+nonce 仅在进程内存保存，当前 Docker 启动单 worker；扩为多 worker/多副本前需要共享重放存储。
 
-## 本地启动与验证
+## 工作流与工具边界
 
-在本目录：
+`app/agent/extraction_graph.py`、`candidate_graph.py`、`coach_graph.py` 使用真实 LangGraph `StateGraph`。其中抽取图包含准备、生成、校验及修复分支；候选图执行来源检查、抽取与原答案协调。考纲整理、资料整理与讲解工具循环不能统称为 LangGraph Agent。
+
+`app/agent/coach_tools.py` 是普通异步有界循环。`COACH_TOOLS_ENABLED` 默认 `true`，还需要文本供应商支持 `stream_chat` 且至少配置一种工具；存在未作答题卡时禁止搜索与抓取。未进入工具循环时，非未作答场景仍可能通过 `coach_search.retrieve` 执行关键词检索，因此关闭此开关不等于禁用全部联网。
+
+`search_web` 与 `fetch_page` 共用单轮预算：最多 6 次工具调用、24 KiB 累计观察数据、128 KiB 序列化历史、90 秒总时限，最多 4 次模型调用，最后一轮强制禁用工具；单工具执行限 8 秒。重复参数使用请求内缓存，但仍计调用与观察预算。`recency` 契约包含 `year`，执行器当前仅支持 `any`，其他值返回工具错误。明确工具协议错误或不支持时允许一次无工具降级；网络、鉴权和限流错误不触发该重试。
+
+SSE 包含 `delta`、工具状态/审计、来源、建议及 `done` 或 `error`。正文可能已发送部分片段，只有最终 JSON 与契约完整验证后才发成功收尾；接收方遇 `error` 必须丢弃部分回复。工具返回是未核验数据，不得改变 Java 判分或覆盖系统指令。
+
+## PDF、考纲与供应商
+
+- PDF：`app/parser/pdf_runner.py` 在独立子进程解析，输入最多 20 MiB、200 页，20 秒超时，输出最多 6 MiB；另有文本、解压内容与资源深度/数量限制。Darwin 使用 RSS 看门狗（2 GiB 阈值），采样存在窗口；这不是完整 OS 沙箱，也不是公网任意不可信上传安全保证。`pdf_inspection.py` 不渲染、不 OCR、不联网；扫描页和复杂排版需要人工处理。
+- 考纲：`syllabus_runner.py` 与 `syllabus_extraction.py` 提取离线页文与章节；`agent/syllabus_review.py` 做模型整理与契约检查。嵌入入口一次 1–8 段，每段最多 3000 字、合计最多 12000 字，并校验有限非零向量、模型及维度一致性。Python 不负责版本激活或检索数据库。
+- 文本模型：`app/llm/openai_compatible.py` 通过 HTTPX 实现兼容接口、JSON/文本/工具流；配置任一 `TEXT_LLM_*` 字段即整组选用，不从旧 `LLM_*` 组补密钥。
+- OCR：`app/providers/ark.py:ArkOCRProvider` 已有图片适配器，限定 PNG/JPEG/WebP、10 MiB；`main.py` 尚未将它接入服务生命周期或 PDF 路由。
+- Embedding：`ArkEmbeddingProvider` 已接入考纲嵌入。维度必须以供应商实际输出为准，不能由模型名推断，不能假定能写入数据库的 `vector(1024)`。
+- 搜索/抓取：`app/providers/deepseek.py` 调用独立 `/tools/search`、`/tools/fetch`，能力各自使用独立配置。抓取前校验公开 HTTP(S) 地址和 DNS，校验显式返回的最终 URL，限制正文类型与响应大小。客户端不能控制远端工具再次解析 DNS 或逐跳行为，不能把这些校验等同远端 SSRF 沙箱。
+
+以上是代码与替身测试覆盖的接口能力；本轮未调用真实文本、OCR、Embedding、搜索、抓取供应商，示例地址/模型不构成连通性承诺。
+
+## 私人学习资料
+
+`app/api/materials.py` 校验公开消息、题卡及已揭示判分的一致性；只接受普通用户。`app/agent/materials.py` 做一次长模型调用，不检索、不调用工具、不自动重试；未作答题只能保留公开题干和选项。Java 负责冻结对话范围、持久化与后续读取权限。
+
+默认输入正文字符上限 1,000,000、原始请求体上限 8 MiB（验签前有界读取）；输出 Markdown 最多 100,000 字符、模型返回最多 1 MiB。资料单独配置最多 32768 输出 token、600 秒超时，不扩大普通聊天预算。
+
+## 本地运行与检查
+
+要求 Python >=3.11；Docker 使用 Python 3.12。依赖范围以 `pyproject.toml` 为准，安装使用 `uv.lock`：FastAPI、Starlette、HTTPX、Pydantic Settings、Uvicorn、LangGraph、pypdf；开发工具为 pytest、Ruff。
 
 ```bash
-uv sync --group dev --frozen
-uv run pytest -q
-uv run ruff check --no-cache .
-uv run ruff format --no-cache --check .
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+cd backend/ai-python
+cp .env.example .env
+# 编辑本目录 .env，填入内部密钥及需要启用的供应商配置
+uv sync --frozen
+bash start.sh
 ```
 
-`GET /health/live` 返回 `{"status":"alive"}`，只表示进程存活，不表示模型已配置。
+`start.sh` 必须存在本目录 `.env`，通过 `uv run --env-file` 显式加载，监听 `127.0.0.1:8000`，支持 `AI_PORT` 和 `QUEST_UV_BIN`。`Settings` 本身不自动查找 `.env`。脚本关闭 LangSmith/LangChain tracing，启动器关闭 access log。PyCharm 配置见 [PyCharm开发](PyCharm开发.md)。
 
-## 配置
-
-通过环境变量注入，不自动读取 `.env`：
-
-- `APP_ENV=local|production`，默认 local。
-- `INTERNAL_SERVICE_TOKEN`、`INTERNAL_HMAC_SECRET`：生产必须分别提供至少 32 字符的独立随机值，否则拒绝启动。local 未配置允许健康启动，但所有内部接口拒绝处理。
-- 文本模型独立配置：`TEXT_LLM_BASE_URL`、`TEXT_LLM_API_KEY`、`TEXT_LLM_MODEL`。当前预填灵思亮界文档站点的 `/v1` 地址和 `deepseek-v4.1-flash`，实际API Host仍需联调确认；Key留空由操作者填写，不发聊天。
-- 任一 `TEXT_LLM_*` 出现即选用完整文本配置组，缺项不会借用旧 `LLM_*` 或图片/向量/搜索密钥；缺配置返回503，不伪造结果。完全没有新配置组时保留旧 `LLM_*` 兼容。
-- 方舟调试OCR配置：`OCR_API_BASE_URL=https://ark.cn-beijing.volces.com/api/plan/v3`、`OCR_MODEL=doubao-seed-2.1-pro`、独立`OCR_API_KEY`。
-- 方舟调试向量配置：`EMBEDDING_BASE_URL`同上、`EMBEDDING_MODEL=doubao-embedding-vision`、独立`EMBEDDING_API_KEY`。严格使用用户给定无版本后缀别名；`EMBEDDING_DIMENSIONS`暂未设，实际输出维度要验证，现有PG为vector(1024)，不自动改表。
-- `SEARCH_API_BASE_URL/KEY`与`FETCH_API_BASE_URL/KEY`为DeepSeek独立工具配置占位。
-- 五项Provider已实现并做过最小合成/公开内容真实连通性验证，见[验证记录](../../docs/模型服务连通性验证.md)；向量实际2048维，不写现有1024维列。方舟Files/Responses/PDF原文件上传尚未验证，不静默换正式付费地址，不重复连通性调用。真实材料OCR/模型请求仍须明确内容范围与预算。
-- 可选 `LLM_TIMEOUT_SECONDS=30`、`LLM_TEMPERATURE=0`、`LLM_MAX_TOKENS=4096`。
-
-## 内部 API
-
-`POST /internal/extract`，请求：
-
-```json
-{"scope":"admin","text":"原始题目文本"}
+```bash
+uv run pytest
+uv run ruff check .
 ```
 
-请求必须携带四个 HMAC headers，协议见 [`docs/api.md`](../../docs/api.md)（项目根目录的 `docs/api.md`）。`scope=student` 禁止调用导入工具，非法 scope 拒绝；Java 必须先根据真实用户身份授权，不得把服务凭据交给终端。
-
-响应遵循 `{code,message,data,traceId}`。AI 内容强制 `draft`，即使模型声称已发布也不会直接发布。上游响应按题目 schema 校验，最多一次格式修正重试；网络错误不自动重试。
-
-## 部署边界
-
-Docker build context 为本目录，非 root 用户，固定单 worker。当前 nonce 防重放是进程内加锁存储：**不得直接扩成多 worker / 多副本**，重启也会清空 nonce。上线前接共享 Redis 原子 `SET NX EX`，并验证跨副本与重启的重放行为。未配置模型时 production 服务仍可存活，以便先完成资源部署。
-
-当前本地完整pytest为272 passed、2 warnings，ruff/格式检查通过，覆盖Provider、PDF预检、证据组装和候选图；测试不请求真实模型。两条警告为Starlette/AnyIO弃用别名和PDF测试fixture的add_js弃用，未屏蔽。此前五项最小真实连通性验证另有记录，不等同真实PDF/截图抽取验收。容器未构建/运行。
+测试位于 `tests/`，覆盖内部安全、契约、图、PDF 子进程、考纲、资料、供应商替身与工具流。主线最近记录 Python 665 项通过；该记录不等同本轮重新执行或真实供应商验收。`tests/local_*` 是显式本地辅助入口，运行前检查其配置和副作用，不能视为默认离线验收步骤。

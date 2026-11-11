@@ -1,89 +1,24 @@
-# 学习资料与 RocketMQ 联调验收
+# 学习资料与RocketMQ技术及验收
 
-更新：2026-11-10。本地实现及自动化验证已接线，最终并发审查中；本文件的配置说明不代表已完成真实 NAS 迁移或 MQ 收发。
+更新：2026-11-11。实现事实依据当前源码、依赖清单和测试核对；不以旧文档推定运行状态。
 
-## 功能范围
+已实现资料任务完整代码：PC会话整理意图/按钮 → `LearningMaterialService`存不可变快照、资料行及事务outbox → `MaterialMqWorker`中继发布MQ → 同Worker消费者HMAC调用API → `MaterialTaskExecutor`认领并调用Python`/internal/material-generate` → 保存Markdown/状态 → PC轮询、资料页、下载和手工重试。
 
-- 顶部“学习资料”统一查看本人所有会话生成的资料。
-- 对话顶部按钮或明确自然语言“整理本次对话为复习材料”创建任务；立即返回，不等待模型。
-- 内容经模型提炼为知识点、问答、已讨论例题、易错点等，非聊天记录拼接。
-- 本期 Markdown，PDF 仅预留。Markdown 持久保存在 PG，下载不重新计费。
-- 资料与来源会话独立，删除源会话不删除资料，也不中断已创建资料任务。未答题不向整理模型发送隐藏答案。
+资料用generation/eventId/lease防重，模型调用失败保存failed，不由消息重投触发无限付费重试。消费者仅发送taskId/generation/eventId，不发全文。Worker没有业务数据库也不直接调用模型；API是执行与持久化边界。
 
-## 实际链路
+| 配置                               | 代码默认/固定值                                                  |
+| ---------------------------------- | ---------------------------------------------------------------- |
+| API `quest.materials.enabled`      | false                                                            |
+| Worker `QUEST_MATERIAL_MQ_ENABLED` | false                                                            |
+| Topic / tag                        | quest-learning-materials / generate                              |
+| producer / consumer group          | quest-material-publisher / quest-material-worker                 |
+| API并发生成                        | 2                                                                |
+| outbox每批 / consumer线程          | 8 / 2                                                            |
+| Worker消息最大体积                 | 4096字节                                                         |
+| 资料输出                           | Markdown，最多100000字符；模型最长600秒，Java/Worker另留传输预算 |
 
-```text
-浏览器 → Java API 创建任务／冻结公开消息／同事务写 mq_outbox
-                   ↓
-本机 Worker → HMAC API 领取待投递事件 → RocketMQ Topic
-                   ↓                      ↓
-         API 确认投递成功         本机 Worker 消费
-                                          ↓
-                       HMAC Java execute → Python → LLM
-                                          ↓
-                           Java 保存完整 Markdown 和状态
-```
+旧`OUTBOX_ENABLED`不是本功能开关，true仍明确拒绝通用outbox未实现。Topic必须显式准备，broker配置关闭自动建Topic；Worker启动先检查Topic，失败不装成已工作。
 
-PG 是任务状态、快照与资料事实源，RocketMQ 是生成任务的投递／消费通道，不使用 PG 轮询代替 MQ 消费。Worker 不写业务数据库，不接收 owner 凭据；MQ 消息只有 taskId、generation、eventId，均为 UUID 字符串，不包含私聊正文。
+真实联调需同时确认数据库V13所需结构、API开关、Worker开关、Topic、NameServer/Broker可达、两端HMAC和文本模型。仓库只证明这些代码存在，本轮未创建Topic/开启远端开关/发真实消息。
 
-发送至少一次，Outbox ACK 丢失可重投；API 按 taskId／generation／eventId 和行锁领取，重复消息不二次调用模型。无法确认是否已计费的超时 processing 标 failed，用户人工重试产生新 generation，不自动重复付费。若消息因重投耗尽进入死信，API维护将超过30分钟未消费的queued任务标failed，提示检查MQ后手动重试，旧generation消息不能执行；维护不自动调用模型。资料模型调用审计仅保存大小／SHA256摘要和结果元数据，不向 Admin 日志详情暴露私人快照或完整 Markdown。
-
-## 开关与本机启动
-
-不要先开启：新数据库结构与 Topic 的真实写入仍需单独授权。
-
-- API：`quest.materials.enabled=true`（环境 `QUEST_MATERIALS_ENABLED=true`），默认 false。关闭时禁止新建／重试／领取投递／领取生成，不取消已经开始的调用；已有完成资料仍可列表、预览及下载。
-- Worker：`QUEST_MATERIAL_MQ_ENABLED=true`，默认 false；普通 `OUTBOX_ENABLED` 保持 false，不使用旧占位开关。
-- Worker API 地址：`QUEST_API_SERVICE_URL=http://127.0.0.1:8080`。
-- NameServer：沿用项目 `ROCKETMQ_NAME_SERVER`，群晖9876；Broker实际地址需要开发机可达，配置不等于真实消息已验收。
-- Topic：`quest-learning-materials`；Tag：`generate`。
-- Producer Group：`quest-material-publisher`；Consumer Group：`quest-material-worker`。
-- Worker／API／Python 内部HMAC配置需匹配，复用现有内部token/secret；不把值复制到文档、日志或命令行。
-- 应用全部在Mac运行；NAS只运行已有中间件；不运行根deploy Compose，不部署API/Worker/Python至NAS。
-
-用户IDE进程不由开发助手自动重启。完成验收准备后用户分别重启API/Python，并启动独立Worker工程。
-
-## 长上下文预算
-
-按用户确认的项目1M上下文模型配置：资料默认输入有效内容100万字符、序列化8MiB，输出32768tokens、Markdown10万字符；不是承诺100万字符等于100万tokens。超过预算或供应商拒绝窗口应明确失败，不静默裁切成最近若干条。
-
-资料Python调用600秒，API请求与响应体总截止650秒，Worker内部执行700秒，任务租约15分钟；独立于普通对话95秒正文流和140秒轮次。普通聊天限制不全局放开。
-
-快照从公开的历史完成轮次response_json和当前已持久化消息合并，按消息ID去重／更新已揭示判分；不使用临时SSE片段、不取current.snapshot内部答案。当前历史数据如果缺少可恢复的公开轮次，不能承诺恢复从未持久化的内容。
-
-## 本地验证记录
-
-- 完整 Java `verify`：189项、0失败／错误／跳过，包含API资料任务19项、资料开关3项、HTTP长响应／审计3项及Worker20项。一次全量运行暴露Worker短期限测试异常包装竞争，已严格限定两种timeout异常后重跑全量通过，没有放宽生产超时。
-- 独立审查后补强并有回归：超过30分钟未消费的排队任务转failed（MQ死信不再永久queued）；滚出100条消息的历史题按公开顶层判分补回；流式自然语言整理失败保持failed并传播原业务码，不伪装成功；删除来源后原创建请求仍幂等返回；创建与重试统一来源→资料锁顺序；HMAC时间窗改为显式上下界比较。
-- Python：616项通过，ruff check／format通过，保留现有2条依赖弃用warning。
-- 前端：325项（shared117／PC208）通过，lint／typecheck／format／双端build通过；资料专用业务码覆盖HTTP与SSE安全中文反馈，保留既有大包warning。
-- 迁移／部署静态测试38项通过；V13双副本一致，未执行。
-- 浏览器使用独立Chrome和合成业务响应验证1440／560px布局、预览安全及真实Markdown下载落盘；没有以此宣称真实NAS／MQ／模型链路通过。
-
-## V13 迁移（2026-11-10 用户明确授权后执行并核验）
-
-- 使用项目现有 Flyway 12.4.0 与 JDBC 依赖独立执行，未启动 API、Worker、调度器或模型服务，未重启用户 IDE 进程。
-- V1–V12 校验通过；V13 成功新增 `learning_material`、`learning_material_request` 两表及 `mq_outbox.lease_token/lease_until` 字段，成功标记 `success=true`，checksum `1532680943`；迁移历史版本序列为 1–13，重复执行迁移数为 0。
-- 既有业务表仍为 49 张，新表 2 张；两张新表均为 0 行，`mq_outbox` 为 0 行。
-- 权限以实际账号核验：`quest_app` 可读取资料表、无 DELETE、无 quest_ai 授权；`quest_ai` 读取被拒绝。
-- 既有数据计数：会话 13（其中 8 个为用户自行软删除）、轮次 47、用户 3、公共题库 1、公共题目 13（13 已发布）。
-- 首次执行后的自建摘要校验把“新增两张表”误判为既有表变化并中止了后续断言，迁移本身已成功；随后改用只读脚本按既有 49 表范围复核，未回滚、未重复写入。该误报来自校验脚本口径，不是数据异常。
-- 已执行的 V13 SQL 不可再编辑；后续变更须新增版本。
-
-## RocketMQ 资源（2026-11-10 用户授权后创建并核验）
-
-- 使用项目 Worker 依赖中的 RocketMQ 5.3.1 客户端，从本机连 NameServer 创建，未登录 NAS、未执行 docker 命令、未改 Broker 配置、未删除或清理任何现有 Topic 与消费组。
-- Topic `quest-learning-materials`：4 个读队列、4 个写队列、读写权限；Broker `quest-broker` 返回队列统计，NameServer 路由可见。
-- 消费组 `quest-material-worker`：最大重试 16 次、重试队列 1 个，已从 Broker 回读确认。
-- 生产组 `quest-material-publisher` 在 classic 模式下不落 Broker 元数据，由 Worker 首次发送时生效；未做 ACL（当前 Broker 未启用 ACL，仅在可信内网使用）。
-- 为创建管理端调用，仅把 `rocketmq-tools:5.3.1` 下载到项目 Maven 缓存供临时工具使用，**未加入任何 POM 依赖**。
-- 尚未发送任何消息：消息生产／消费、重复投递、死信与容量限制仍需打开开关并启动 Worker 后用合成任务验证。
-
-## 待授权真实验收
-
-1. ~~执行V13~~ 已于 2026-11-10 授权执行并核验，见上一节。
-2. ~~创建Topic与消费组~~ 已于 2026-11-10 授权创建并核验，见「RocketMQ 资源」；**消息收发冒烟仍未做**，需打开开关并启动 Worker 后用合成任务验证。
-3. 配置并重启本机服务，先用合成会话通过真实MQ＋假模型验证，再按用户授权范围调用真实模型验收资料质量。
-4. 验证浏览器离开后任务完成、来源会话删除后资料保留、跨用户/Admin拒绝、重复消息只调用一次、失败人工重试、真实Markdown下载。
-
-当前未获上述远程结构／MQ写入授权；本地自动化测试通过也不代表真实RocketMQ已验收。
+验收：重复消费不重复生成；失败保存可见原因且必须显式重试；超时任务可收敛；源会话删除后资料仍按所有者授权读取；不同用户不能读列表/快照/下载；下载仅ready；进程重启/租约失效不得让旧generation覆盖新任务。前端与API测试并非真实RocketMQ发收证据。

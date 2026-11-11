@@ -1,80 +1,51 @@
-# WebStorm：独立前端工程
+# 前端工程
 
-**后续页面复用：[UI规范与本轮调整总结](docs/UI规范.md)**（Admin导航/全宽布局、字体降级、Arco主题、列表/Modal和文案约定）。
+更新日期：2026-11-11。项目总览见[根 README](../README.md)，跨端状态见[项目现状](../docs/项目现状.md)，服务边界见[架构说明](../docs/架构说明.md)，完整启动步骤见[本地开发启动](../docs/本地开发启动.md)。本页只维护前端入口与开发方式。
 
-**Open选择frontend/**。该目录现在是完整pnpm workspace根，拥有package.json、pnpm-workspace.yaml、pnpm-lock.yaml，不需要根仓库package.json。
+`frontend/` 是独立 pnpm workspace，可由 WebStorm 单独打开；`pc-web` 使用 Arco Design Vue，`mobile-agent` 使用 Vant，`shared` 是双端直接引用的 TypeScript 源码包。
 
-两个应用共用shared，所以推荐打开frontend整体，不只单独拷贝pc-web；这属于前端内部共享，不依赖Java/Python/根启动脚本。
+## 当前功能
 
-## 首次安装
+| 入口                                                       | 代码已实现的行为                                                                                                       |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| PC `/login`、`/change-password`                            | 账号密码登录、真实身份恢复、强制改密、角色路由白名单、退出与到期清理                                                   |
+| `/admin/users`                                             | 用户查询、创建、启停与重置密码                                                                                         |
+| `/admin/banks`、`/admin/banks/:id`、`/admin/questions/:id` | 公共题库列表/创建、单题文本解析、PDF 上传及显式启动、任务状态轮询、题目证据审核与编辑、确认、发布/批量发布、撤回和删除 |
+| `/admin/syllabi`、`/admin/syllabi/:id`                     | 考纲 PDF 与元数据、章节编辑、审核状态、发布/归档、审核重试、RAG 索引状态及重建、源文件下载                             |
+| `/admin/logs`                                              | AI 调用日志查询与详情                                                                                                  |
+| `/practice`、`/practice/agent`                             | 学习偏好与最近会话、练习/聊天会话创建、历史读取/删除、SSE 回答、题目卡片作答/下一题、快捷建议、外部工具状态与来源展示  |
+| `/practice/syllabus`                                       | 按科目/年份读取已发布考纲及章节，引导 Agent 解释                                                                       |
+| `/practice/materials`                                      | 资料列表、生成状态轮询、Markdown 预览、失败重试和下载；资料由 Agent 对话页发起生成                                     |
+| `/practice/profile`                                        | 学习科目、可选考试年份设置，展示账号信息                                                                               |
+| `/dev/connection`                                          | 开发连接诊断，非业务登录入口                                                                                           |
+| 移动 `/m/sessions`、`/m/chat/:id`                          | 页面骨架与禁用输入，尚未接入真实会话或 PC Coach 流程                                                                   |
+| 移动 `/m/login`                                            | 手动内存 Token、健康检查和系统信息诊断，尚未接入账号登录、身份与角色守卫                                               |
 
-在frontend目录：
+以上是源码接线状态，不等同于数据库、对象存储、PDF 解析、向量检索或真实模型的端到端验收。PC 工具展示契约目前明确支持 `search_web`、`fetch_page`，前端不直接执行这些工具。`AdminView.vue` 未被当前路由引用，不作为可用入口。
+
+## 安装与运行
+
+Node 要求 `^22.13.0 || >=24.0.0`，pnpm 为 `10.33.0`。锁文件实际版本：Vue 3.5.45、Vue Router 4.6.4、Arco 2.59.0、Vant 4.10.2、Vite 7.3.7、TypeScript 5.9.3、Vitest 3.2.7；以 `pnpm-lock.yaml` 为准，不将依赖声明范围当成安装版本。
 
 ```bash
+cd frontend
 pnpm install --frozen-lockfile
+pnpm dev:pc
+pnpm dev:mobile
 ```
 
-Node 22.13+（22.x）或 >=24，pnpm10.33.0。WebStorm Settings → Node.js选择本机Node，Package manager选pnpm。桌面IDE的PATH不同于终端时配置QUEST_PNPM_BIN；Shell脚本额外检查macOS常用~/Library/pnpm/pnpm。
+PC：`http://localhost:5173/practice`；移动：`http://localhost:5174/m/sessions`。也可运行 `bash start-pc.sh` / `bash start-mobile.sh`。开发服务监听 `0.0.0.0`，使用 strictPort；修改环境变量后重启。
 
-## 本地配置
-
-各应用单独管理，不读取仓库根.env：
-
-```text
-pc-web/.env.local
-mobile-agent/.env.local
-```
-
-开发内容：
+每个应用使用自己的 `.env.local`，模板见各自 `.env.example`，不读取根目录 `.env`。常用开发配置：
 
 ```dotenv
 VITE_API_BASE_URL=/gateway
 DEV_API_PROXY_TARGET=http://127.0.0.1:8080
 ```
 
-本次已生成非敏感代理配置；若目标文件原已存在则保留不覆盖。只看页面不需要启动Java，但健康/系统信息联调需要本地Java8080。前端环境变量公开，不能放S3密钥、JWT签名secret或SSH密码。
+`VITE_*` 会公开到浏览器，不放密钥。代理通过 `proxy-client-ip.ts` 覆盖 `X-Quest-Client-IP` 为 TCP 来源并移除客户端 XFF；后端可信代理配置与生产入口见根开发文档。生产同源部署使用 `VITE_API_BASE_URL=/`，需重新构建；移动静态资源和 history 回退保留 `/m/` 前缀。
 
-### 登录限流与可信代理来源
-
-PC 和移动 Vite 的 `/gateway` 代理均在发送上游请求前，将 `X-Quest-Client-IP` 覆盖为当前 TCP 连接的 `req.socket.remoteAddress` 单个合法 IP；缺失时移除该头，同时移除客户端提供的 `X-Forwarded-For`，不根据浏览器传入的转发头推断来源。
-
-Java 的 `quest.security.login.trusted-proxies` 默认空。只有操作人明确配置可信代理地址（例如本机代理的 `127.0.0.1,::1`）时，后端才应读取专用来源头；可信代理缺少合法来源头应拒绝，不能回退信任任意 XFF。需保持 `server.forward-headers-strategy=none` 并限制后端端口访问，避免客户端绕过受信代理伪造专用头。本次没有修改真实 Java 配置；代理配置需由用户重启 Vite 后生效，不能仅凭页面构建通过声称限流已在当前运行进程启用。
-
-生产 Nginx 同样必须覆盖 `X-Quest-Client-IP` 为 `$remote_addr`，不能原样转发请求方提供的同名头；具体配置由主工程部署流程维护。
-
-## Run方式一：npm配置
-
-WebStorm打开本工程package.json，点scripts旁运行按钮：
-
-- dev:pc → PC
-- dev:mobile → 移动
-- lint / format:check / test / typecheck / build → 验证
-- lint:fix / format → 自动修复与格式化
-
-也可Add Configuration → npm → package.json选本工程文件，Command=run，Script=dev:pc或dev:mobile。
-
-## Run方式二：Shell配置
-
-顶栏 **Quest PC / Quest Mobile**，或右键start-pc.sh/start-mobile.sh → Run（Shell Script插件，/bin/bash）。
-
-终端：
-
-```bash
-bash start-pc.sh
-bash start-mobile.sh
-# 等价
-pnpm dev:pc
-pnpm dev:mobile
-```
-
-PC：http://localhost:5173/practice，管理/admin，Agent/admin/agent。
-移动：http://localhost:5174/m/sessions。
-
-Vite热更新，改.env后重启。当前dev脚本监听0.0.0.0，用于手机经Mac局域网IP访问，仅在可信网络运行。启动页不是群晖IP；后端代理仍在Mac转发到127.0.0.1:8080。
-
-停止：WebStorm红色Stop/终端Ctrl+C；不要同时重复启动同一脚本，strictPort会对冲突报错。
-
-## 测试构建
+## 验证与维护
 
 ```bash
 pnpm lint
@@ -82,40 +53,8 @@ pnpm format:check
 pnpm test
 pnpm typecheck
 pnpm build
-
-# 修改文件后自动修复代码问题与格式
-pnpm lint:fix
-pnpm format
 ```
 
-ESLint 10 flat config 位于 `eslint.config.mjs`，启用 JavaScript、TypeScript 与 Vue recommended 规则，警告也使检查失败。Prettier 3 位于 `.prettierrc.json`，统一无分号、单引号、两空格、100 列和 LF；`eslint-config-prettier` 关闭与格式化冲突的 lint 规则。依赖、构建产物、锁文件和环境文件不参与格式化。类型问题继续用 `pnpm typecheck` 检查。
+`test` 同时运行 shared 与 PC；移动端没有独立测试脚本。最新主线记录为 shared 120、PC 208，共 328 项测试通过，且 lint、格式、类型与双端构建通过；该记录不代表真实服务联调。本次文档整理不重复执行重检查。测试入口为 `shared/tests/`、`pc-web/src/tests/`，产物为两应用的 `dist/`。
 
-外层 `/Users/brian/Desktop/quest-agent/` 是主项目，不是前端依赖根。可在主项目根目录执行同名命令（如 `pnpm lint`、`pnpm format`），根脚本会切换到 `frontend/`，不会扫描或格式化后端及主项目文档。依赖只安装在 `frontend/`，版本锁定在本目录 `pnpm-lock.yaml`。
-
-WebStorm 打开 `frontend/` 时，在 Settings → Languages & Frameworks → JavaScript → Code Quality Tools → ESLint 选择 Automatic ESLint configuration；Prettier 选择本目录 `node_modules/prettier`，可启用 Run on save。若打开整个主项目，ESLint 工作目录使用 `frontend/`，Prettier 包仍指向 `frontend/node_modules/prettier`，文件范围限定 `frontend/`，不要对整个主项目启用格式化。
-
-单元测试覆盖shared、PC用户页面/路由/代理与Arco Less主题编译；构建产物为pc-web/dist和mobile-agent/dist。
-
-## Admin后台布局
-
-参考用户提供的super-order-admin后台规范，Admin与学习页面使用不同外壳：顶部58px一级“系统管理”，左侧220/48px可折叠二三级菜单“用户管理→用户列表”，内容区左右16px且不设max-width，40px居中正常流Footer。仅管理已实现功能，不添加假导航或权限解释段落。
-
-用户列表为2px圆角白色Arco卡片，筛选响应式栅格+右侧查询/清空、分隔线、操作工具栏、表格和分页；弹窗使用标准footer“取消→提交”，先form.validate再调用接口，错误保留弹窗，处理中禁止重复操作。顶部一级/侧栏三级无图标，二级分组保留图标，折叠用Arco图标。右上头像下拉收纳改密/退出。尺寸样式集中在pc-web/src/layouts/admin-layout.css，普通用户布局不套Admin侧栏。
-
-## PC主题与登录状态
-
-PC的pc-web/theme.ts通过Less modifyVars设置arcoblue-6=#087d84，Arco按需引入Less，自动生成完整色阶；编译器less在前端workspace根统一安装，避免Vite可选peer依赖类型分裂。改theme/Vite配置或新增依赖后重启PC开发服务。
-
-后台品牌为纯文字“知序｜管理后台”，登录/改密页同样纯文字无图标，学习/移动页面其余单字标识仍为“序”。品牌与原宋体区域使用共享--font-serif（Noto Serif SC在线字体，Songti SC/SimSun降级）。默认正文--font-sans为Noto Sans SC→Noto Sans→PingFang SC→Microsoft YaHei→system-ui→sans-serif，Arco/Vant同步使用；Footer品牌衬线、宣传语无衬线。Google Fonts通过shared/fonts.css引入，不打包字体资源；网络失败使用本地降级。登录页只提示必填，不把新密码规则或平台内部管理说明展示给登录用户。
-
-登录/改密共享纸张式2px卡片与留白，认证失败/改密结果使用Arco顶部Message，不插入红色Alert；登录卡片不显示会话过期条，主动退出不误报到期。新密码规则和首次改密权限保持。
-
-Vue三个应用/共享包声明统一^3.5.45，当前锁定3.5.45；2026-11-07查询npm latest为3.5.45，3.6仍RC，不引入预发布。
-
-真实认证在localStorage的quest.auth.session保存token、expiresAt、baseURL，刷新后先通过/auth/me恢复真实身份；不保存密码或缓存角色。不延长后端2h有效期，无Refresh Token；过期/401/登出清缓存。localStorage可被同源脚本读取，生产应评估HttpOnly Cookie升级。开发诊断Token仍仅内存。
-
-## 生产配置
-
-Nginx同源部署使用VITE_API_BASE_URL=/，不是开发/gateway。Vite变量在构建时嵌入，不能靠改Nginx容器环境变量替换已有静态产物。
-
-PC登录和Admin用户管理已实现；题库/练习/Agent真实内容与用量仍未接入，不提供假数据；移动端仍为旧Agent骨架。shared包含认证、Axios错误、SSE和安全Markdown。
+页面约定见 [UI 规范](docs/UI规范.md)，缓存机制见[页面单向缓存](docs/页面单向缓存.md)。新增行为先核对当前源码和接口，不以旧计划推断完成度。
