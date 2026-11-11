@@ -19,7 +19,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _diagnose(stage: str, failure: Exception, request: Request):
+def _diagnose(stage: str, failure: Exception, request: Request, parser=None):
     # 不记录异常 message/input，Pydantic 默认异常文本可能含模型原文。
     errors = ""
     if isinstance(failure, ValidationError):
@@ -27,13 +27,51 @@ def _diagnose(stage: str, failure: Exception, request: Request):
             f"{'.'.join(map(str, item['loc']))}:{item['type']}"
             for item in failure.errors(include_input=False, include_context=False)[:8]
         )
+    reasons = {
+        "JSON 结构无效": "json_structure_invalid",
+        "JSON 过长": "json_too_large",
+        "正文过长": "reply_too_long",
+        "JSON 存在尾随内容": "json_trailing_content",
+        "JSON 不完整": "json_incomplete",
+        "JSON 缺少分隔符": "json_missing_delimiter",
+        "缺少有效正文": "reply_missing",
+        "重复 JSON 字段": "json_duplicate_key",
+        "无效 Unicode 代理对": "json_invalid_surrogate",
+        "JSON 值未结束": "json_value_incomplete",
+        "JSON 字段名必须是字符串": "json_key_not_string",
+        "JSON 不允许非有限数字": "json_nonfinite_number",
+    }
+    reason = (
+        "json_decode_error"
+        if isinstance(failure, json.JSONDecodeError)
+        else reasons.get(str(failure), "unclassified")
+    )
+    raw = parser.raw if parser is not None else ""
+    prefix = raw.lstrip()
+    shape = (
+        "empty"
+        if not prefix
+        else "markdown_fence"
+        if prefix.startswith("```")
+        else "object"
+        if prefix.startswith("{")
+        else "array"
+        if prefix.startswith("[")
+        else "text"
+    )
     logger.warning(
-        "AI failure stage=%s trace=%s type=%s code=%s validation=%s",
+        "AI failure stage=%s trace=%s type=%s code=%s validation=%s "
+        "reason=%s shape=%s output_bytes=%d parser_state=%s parser_pos=%d",
         stage,
         getattr(getattr(request, "state", None), "trace_id", ""),
         type(failure).__name__,
         getattr(failure, "code", ""),
         errors,
+        reason,
+        shape,
+        len(raw.encode("utf-8", errors="replace")),
+        getattr(parser, "state", "unavailable"),
+        getattr(parser, "pos", 0),
     )
 
 
@@ -223,7 +261,6 @@ async def coach_explain(payload: CoachRequest, request: Request):
     use_tools = (
         getattr(getattr(request.app.state, "settings", None), "coach_tools_enabled", False)
         and callable(getattr(provider, "stream_chat", None))
-        and (search is not None or fetch is not None)
         and not unanswered
     )
     # 新循环不再运行关键词检索；未作答题目的两条路径均禁止外发。
@@ -243,7 +280,14 @@ async def coach_explain(payload: CoachRequest, request: Request):
         try:
             if use_tools:
                 async with aclosing(
-                    explain_with_tools(provider, search, messages, fetch=fetch)
+                    explain_with_tools(
+                        provider,
+                        search,
+                        messages,
+                        fetch=fetch,
+                        max_tool_calls=request.app.state.settings.coach_max_tool_calls,
+                        max_tool_rounds=request.app.state.settings.coach_max_tool_rounds,
+                    )
                 ) as stream:
                     async for event in stream:
                         if event["type"] == "tool_status":
@@ -271,11 +315,11 @@ async def coach_explain(payload: CoachRequest, request: Request):
                             yield _event("delta", {"text": text})
             result = ExplanationReply.model_validate(parser.finish())
         except ServiceError as failure:
-            _diagnose("coach_explain", failure, request)
+            _diagnose("coach_explain", failure, request, parser)
             yield _event("error", {"code": failure.code})
             return
         except (ValueError, TypeError, RecursionError) as failure:
-            _diagnose("coach_explain", failure, request)
+            _diagnose("coach_explain", failure, request, parser)
             # 半截正文不可回收；Java/前端必须丢弃，不能将其保存为成功回复。
             yield _event("error", {"code": 50203})
             return

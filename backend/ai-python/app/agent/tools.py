@@ -10,11 +10,12 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from app.agent.local_time import TimeArguments, current_time
 from app.core.errors import ServiceError
 from app.providers._urls import public_url_host
 
 logger = logging.getLogger(__name__)
-MAX_CALLS = 6
+MAX_CALLS = 12
 MAX_OBSERVATION_BYTES = 24 * 1024
 
 
@@ -75,9 +76,13 @@ def encode_observation(value):
 
 
 class ToolExecutor:
-    def __init__(self, search, *, fetch=None):
+    def __init__(self, search, *, fetch=None, clock=None, max_calls=MAX_CALLS):
+        if not 1 <= max_calls <= 32:
+            raise ValueError("工具调用上限必须为1–32")
+        self.max_calls = max_calls
         self.search = search
         self.fetch = fetch
+        self.clock = clock
         self.cache = {}
         self.count = 0
         self.observation_bytes = 0
@@ -86,7 +91,9 @@ class ToolExecutor:
 
     def _bounded(self, observation):
         # 每次返回都计字节，包括去重缓存和错误；为余下调用预留错误观察空间。
-        allowance = MAX_OBSERVATION_BYTES - self.observation_bytes - 128 * (MAX_CALLS - self.count)
+        allowance = (
+            MAX_OBSERVATION_BYTES - self.observation_bytes - 128 * (self.max_calls - self.count)
+        )
         result = json.loads(encode_observation(observation))
         while len(encode_observation(result).encode("utf-8")) > allowance:
             result["truncated"] = True
@@ -109,14 +116,18 @@ class ToolExecutor:
         return result
 
     async def execute(self, call):
-        if self.count >= MAX_CALLS:
+        if self.count >= self.max_calls:
             raise ServiceError(502, 50203, "工具调用超过上限")
         self.count += 1
         tool = call["function"]["name"]
-        if tool not in {"search_web", "fetch_page"}:
+        if tool not in {"search_web", "fetch_page", "get_current_time"}:
             return self._bounded({"error": "unknown_tool", "truncated": False})
         try:
-            model = SearchArguments if tool == "search_web" else FetchArguments
+            model = {
+                "search_web": SearchArguments,
+                "fetch_page": FetchArguments,
+                "get_current_time": TimeArguments,
+            }[tool]
             arguments = model.model_validate_json(call["function"]["arguments"])
         except (ValidationError, ValueError):
             return self._bounded({"error": "invalid_arguments", "truncated": False})
@@ -132,8 +143,11 @@ class ToolExecutor:
                     if tool == "search_web":
                         result = await self._search(arguments)
                         count = len(result["results"])
-                    else:
+                    elif tool == "fetch_page":
                         result = await self._fetch(arguments)
+                        count = 1
+                    else:
+                        result = current_time(arguments, self.clock)
                         count = 1
             except asyncio.CancelledError:
                 category = "cancelled"
@@ -159,7 +173,9 @@ class ToolExecutor:
                 )
                 logger.info(
                     "ai.tool_%s hash=%s count=%d duration_ms=%d failure=%s",
-                    "search" if tool == "search_web" else "fetch",
+                    {"search_web": "search", "fetch_page": "fetch", "get_current_time": "time"}[
+                        tool
+                    ],
                     hashlib.sha256(key.encode()).hexdigest(),
                     count,
                     int((time.monotonic() - started) * 1000),

@@ -73,3 +73,30 @@ def test_invalid_final_json_does_not_emit_sources_or_done():
     assert names[-1] == "error"
     assert "sources" not in names
     assert "done" not in names
+
+
+def test_completed_plain_tool_answer_is_delivered_as_reply_not_json_fragments():
+    provider = ToolProvider([[{"type": "content", "text": "\n\n## 政策概括\n正文"}]])
+    with TestClient(create_app(settings(), provider=provider)) as client:
+        response = send(client, {"scope": "student", "message": "说明政策"})
+    assert text_of(response) == "## 政策概括\n正文"
+    assert events(response)[-1][0] == "done"
+
+
+def test_completed_fenced_json_tool_answer_only_delivers_inner_reply():
+    provider = ToolProvider(
+        [
+            [
+                {"type": "content", "text": chunk}
+                for chunk in (
+                    "\n\n",
+                    "`",
+                    '``json\n{"reply":"政策概括","suggestions":[]}\n```',
+                )
+            ]
+        ]
+    )
+    with TestClient(create_app(settings(), provider=provider)) as client:
+        response = send(client, {"scope": "student", "message": "说明政策"})
+    assert text_of(response) == "政策概括"
+    assert events(response)[-1][0] == "done"

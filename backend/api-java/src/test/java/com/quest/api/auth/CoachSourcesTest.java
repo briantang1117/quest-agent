@@ -25,4 +25,11 @@ class CoachSourcesTest {
             assertThat(CoachSources.validate(items,json).get(0).path("tool").asText()).isEqualTo("fetch_page");
         }
     }
+    @Test void acceptsExpandedSourceListAndKeepsTransportLimit(){
+        var items=json.createArrayNode();
+        for(int i=0;i<36;i++)items.add(json.valueToTree(Map.of("tool","search_web","title","资料","url","https://example.com/"+i,"retrieved_at","2026-11-11T00:00:00Z")));
+        assertThat(CoachSources.validate(items,json).size()).isEqualTo(36);
+        for(int i=36;i<97;i++)items.add(items.get(0).deepCopy());
+        assertThatThrownBy(()->CoachSources.validate(items,json)).isInstanceOf(UserFailure.class);
+    }
 }

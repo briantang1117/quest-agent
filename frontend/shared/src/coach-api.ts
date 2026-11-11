@@ -34,7 +34,7 @@ export interface CoachSource {
   retrieved_at: string
 }
 export interface CoachToolStatus {
-  tool: 'search_web' | 'fetch_page'
+  tool: 'search_web' | 'fetch_page' | 'get_current_time'
   status: 'running' | 'completed' | 'failed'
 }
 export interface CoachMessage {
@@ -177,7 +177,7 @@ function isSuggestions(value: unknown): value is CoachSuggestion[] {
 function isSources(value: unknown): value is CoachSource[] {
   return (
     Array.isArray(value) &&
-    value.length <= 18 &&
+    value.length <= 96 &&
     value.every((item) => {
       if (
         !object(item) ||
@@ -258,7 +258,7 @@ export async function streamTurn(
       } else if (event.event === 'tool_status') {
         if (
           !object(value) ||
-          !['search_web', 'fetch_page'].includes(String(value.tool)) ||
+          !['search_web', 'fetch_page', 'get_current_time'].includes(String(value.tool)) ||
           !['running', 'completed', 'failed'].includes(String(value.status))
         )
           throw new Error('无效的陪练工具状态')

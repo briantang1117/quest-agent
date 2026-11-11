@@ -101,6 +101,7 @@ def test_search_then_fetch_observation_reaches_model_and_sources_keep_tools():
         )
         got = [e async for e in explain_with_tools(provider, Search(), [], fetch=Fetch())]
         assert [tool["function"]["name"] for tool in provider.requests[0][1]["tools"]] == [
+            "get_current_time",
             "search_web",
             "fetch_page",
         ]
@@ -133,7 +134,10 @@ def test_default_on_fetch_only_endpoint_and_lifecycle():
     assert text_of(response) == "解释"
     assert fetch.closed
     assert fetch.urls == ["https://example.com/reference"]
-    assert [tool["function"]["name"] for tool in provider.requests[0][1]["tools"]] == ["fetch_page"]
+    assert [tool["function"]["name"] for tool in provider.requests[0][1]["tools"]] == [
+        "get_current_time",
+        "fetch_page",
+    ]
     assert dict(events(response))["sources"]["items"][0]["tool"] == "fetch_page"
 
 

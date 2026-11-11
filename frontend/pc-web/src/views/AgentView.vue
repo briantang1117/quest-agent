@@ -78,7 +78,7 @@ let listRevision = 0
 // 仅在服务端 state 确认之前展示乐观消息。
 const optimistic = ref<{ id: string; role: 'user'; text: string } | null>(null)
 // 临时文本不写入会话；done 必须整体替换为持久化结果。
-const toolRunning = ref<'' | 'search_web' | 'fetch_page'>('')
+const toolRunning = ref<'' | 'search_web' | 'fetch_page' | 'get_current_time'>('')
 const streaming = ref('')
 let alive = true,
   revision = 0
@@ -533,11 +533,13 @@ watch(
           </div>
           <p v-if="busy" class="coach-thinking" role="status">
             {{
-              toolRunning === 'fetch_page'
-                ? '正在读取网页…'
-                : toolRunning
-                  ? '正在检索…'
-                  : '知序正在思考…'
+              toolRunning === 'get_current_time'
+                ? '正在确认日期…'
+                : toolRunning === 'fetch_page'
+                  ? '正在读取网页…'
+                  : toolRunning
+                    ? '正在检索…'
+                    : '知序正在思考…'
             }}
           </p>
           <p v-if="session?.processing && !busy" class="coach-thinking">

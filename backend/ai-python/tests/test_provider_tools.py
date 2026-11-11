@@ -672,3 +672,43 @@ def test_fetch_refuses_binary_http_content_type():
             "fetch",
             "https://example.com/reference",
         )
+
+
+def test_search_removes_page_fragment_without_rejecting_other_hits():
+    payload = {
+        "results": [
+            {
+                "title": "公告定位",
+                "url": "https://example.com/notice#:~:text=考试时间",
+                "snippet": "片段",
+            },
+            {"title": "其他来源", "url": "https://example.org/notice", "snippet": "资料"},
+        ]
+    }
+    result = call(
+        DeepSeekSearchProvider(tool_settings(), transport=transport_json(payload)),
+        "search",
+        "考试公告",
+        count=3,
+        need_content=True,
+    )
+    assert len(result.results) == 2
+    assert result.results[0].url == "https://example.com/notice"
+    assert result.results[1].url == "https://example.org/notice"
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1/private#section", "file:///etc/passwd#section"])
+def test_search_fragment_removal_never_allows_unsafe_targets(url):
+    with pytest.raises(ServiceError):
+        call(
+            DeepSeekSearchProvider(
+                tool_settings(),
+                transport=transport_json(
+                    {
+                        "results": [{"title": "不安全目标", "url": url}],
+                    }
+                ),
+            ),
+            "search",
+            "公告",
+        )

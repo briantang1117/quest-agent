@@ -109,17 +109,17 @@ public class PublicAiClient {
                             JsonNode parsed=json.readTree(data.toString());if(!parsed.path("items").isArray()||parsed.path("items").size()>4)throw new UserFailure(503,50204,"AI建议格式错误");suggestions=parsed;
                         }else if(event.equals("tool_status")){
                             JsonNode parsed=json.readTree(data.toString());
-                            if(!Set.of("search_web","fetch_page").contains(parsed.path("tool").asText())||!Set.of("running","completed","failed").contains(parsed.path("status").asText()))throw new UserFailure(503,50204,"AI工具状态格式错误");
+                            if(!Set.of("search_web","fetch_page","get_current_time").contains(parsed.path("tool").asText())||!Set.of("running","completed","failed").contains(parsed.path("status").asText()))throw new UserFailure(503,50204,"AI工具状态格式错误");
                             control.toolStatus(json.createObjectNode().put("tool",parsed.path("tool").asText()).put("status",parsed.path("status").asText()));
                         }else if(event.equals("tool_audit")){
-                            if(++toolAudits>6)throw new UserFailure(503,50204,"AI工具审计超过上限");
+                            if(++toolAudits>32)throw new UserFailure(503,50204,"AI工具审计超过上限");
                             JsonNode parsed=json.readTree(data.toString());
-                            if(!Set.of("search_web","fetch_page").contains(parsed.path("tool").asText())||!parsed.path("parameter_hash").asText().matches("[0-9a-f]{64}")
+                            if(!Set.of("search_web","fetch_page","get_current_time").contains(parsed.path("tool").asText())||!parsed.path("parameter_hash").asText().matches("[0-9a-f]{64}")
                                 ||!parsed.path("result_count").isInt()||parsed.path("result_count").asInt()<0||parsed.path("result_count").asInt()>3
                                 ||!parsed.path("duration_ms").isIntegralNumber()||parsed.path("duration_ms").asLong()<0||parsed.path("duration_ms").asLong()>95000
                                 ||!Set.of("ok","timeout","unavailable","cancelled").contains(parsed.path("failure").asText()))throw new UserFailure(503,50204,"AI工具审计格式错误");
                             var summary=json.createObjectNode().put("parameter_hash",parsed.path("parameter_hash").asText()).put("result_count",parsed.path("result_count").asInt()).put("failure",parsed.path("failure").asText());
-                            audit.record(caller==null?null:caller.actor(),parsed.path("tool").asText().equals("search_web")?"ai.tool_search":"ai.tool_fetch",null,caller==null?null:caller.traceId(),summary,summary,
+                            audit.record(caller==null?null:caller.actor(),parsed.path("tool").asText().equals("get_current_time")?"ai.tool_time":parsed.path("tool").asText().equals("search_web")?"ai.tool_search":"ai.tool_fetch",null,caller==null?null:caller.traceId(),summary,summary,
                                 parsed.path("failure").asText().equals("ok")?null:new UserFailure(503,50203,"工具调用失败"),parsed.path("duration_ms").asLong(),1,null);
                         }else if(event.equals("sources")){
                             sources=com.quest.api.coach.CoachSources.validate(json.readTree(data.toString()).path("items"),json);

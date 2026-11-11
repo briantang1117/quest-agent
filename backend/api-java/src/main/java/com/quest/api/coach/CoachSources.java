@@ -11,7 +11,7 @@ import tools.jackson.databind.ObjectMapper;
 public final class CoachSources {
     private CoachSources(){}
     public static JsonNode validate(JsonNode items,ObjectMapper json){
-        if(!items.isArray()||items.size()>18||json.writeValueAsBytes(items).length>24576)throw invalid();
+        if(!items.isArray()||items.size()>96||json.writeValueAsBytes(items).length>32768)throw invalid();
         var clean=json.createArrayNode();
         for(var item:items){
             if(!Set.of("search_web","fetch_page").contains(item.path("tool").asText())||!item.path("title").isString()||item.path("title").asText().length()>200)throw invalid();

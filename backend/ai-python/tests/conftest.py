@@ -15,6 +15,8 @@ def isolated_environment(monkeypatch):
     for name in (
         "APP_ENV",
         "COACH_TOOLS_ENABLED",
+        "COACH_MAX_TOOL_CALLS",
+        "COACH_MAX_TOOL_ROUNDS",
         "INTERNAL_SERVICE_TOKEN",
         "INTERNAL_HMAC_SECRET",
         "LLM_BASE_URL",

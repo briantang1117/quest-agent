@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from urllib.parse import urldefrag
 
 import httpx
 
@@ -60,13 +61,15 @@ class DeepSeekSearchProvider(ToolProvider):
                 raise self._invalid_output()
             try:
                 # 这里只保留来源，不自动访问；真正fetch时仍须重新校验DNS。
-                public_url_host(item["url"])
-            except ServiceError:
+                # 定位片段不参与HTTP请求；去掉后仍校验真实目标，避免一条正常来源拖垮整批。
+                url = urldefrag(item["url"]).url
+                public_url_host(url)
+            except (ServiceError, ValueError):
                 raise self._invalid_output() from None
             hits.append(
                 SearchHit(
                     title=item["title"],
-                    url=item["url"],
+                    url=url,
                     content=item.get("content"),
                     snippet=item.get("snippet"),
                 )

@@ -55,6 +55,10 @@ class Provider:
 
 
 def collect(provider, search, **kwargs):
+    # 原边界用例仍显式验证较小预算；生产默认预算另有独立用例。
+    kwargs.setdefault("max_tool_calls", 6)
+    kwargs.setdefault("max_tool_rounds", 3)
+
     async def run():
         return [
             e
@@ -228,3 +232,74 @@ def test_unsafe_source_is_removed():
         assert result["results"] == []
 
     asyncio.run(run())
+
+
+def test_oversized_followup_batch_converges_using_existing_results():
+    # 查时间等前序工具已经占用预算后，不能因为模型继续请求一批工具而毁掉整轮。
+    provider = Provider(
+        [
+            [{"type": "tool_calls", "calls": [call(str(i), str(i)) for i in range(5)]}],
+            [{"type": "tool_calls", "calls": [call("more-a", "a"), call("more-b", "b")]}],
+            FINAL,
+        ]
+    )
+    search = Search()
+    result = collect(provider, search)
+    assert len(search.queries) == 5
+    assert provider.requests[-1][1]["tool_choice"] == "none"
+    assert [e for e in result if e["type"] == "content"] == FINAL
+    assert result[-1]["type"] == "sources"
+    assert len(provider.requests) == 3
+
+
+def test_over_budget_on_last_tool_round_still_has_one_final_generation():
+    provider = Provider(
+        [
+            [{"type": "tool_calls", "calls": [call("first", "first")]}],
+            [{"type": "tool_calls", "calls": [call(str(i), str(i)) for i in range(4)]}],
+            [{"type": "tool_calls", "calls": [call("more-a", "a"), call("more-b", "b")]}],
+            FINAL,
+        ]
+    )
+    search = Search()
+    result = collect(provider, search)
+    assert len(search.queries) == 5
+    assert len(provider.requests) == 4
+    assert provider.requests[-1][1]["tool_choice"] == "none"
+    assert [e for e in result if e["type"] == "content"] == FINAL
+    # 被放弃的工具批次不留下无对应观察的调用消息。
+    assert not any(
+        message.get("tool_calls", [{}])[0].get("id") == "a" for message in provider.requests[-1][0]
+    )
+
+
+def test_expanded_configurable_budget_allows_more_than_six_calls():
+    provider = Provider(
+        [
+            [{"type": "tool_calls", "calls": [call(str(i), str(i)) for i in range(4)]}],
+            [{"type": "tool_calls", "calls": [call(str(i), str(i)) for i in range(4, 8)]}],
+            FINAL,
+        ]
+    )
+    search = Search()
+    result = collect(provider, search, max_tool_calls=12, max_tool_rounds=6)
+    assert len(search.queries) == 8
+    assert [e for e in result if e["type"] == "content"] == FINAL
+
+
+def test_tool_budget_settings_are_bounded_and_default_to_twelve_calls_six_rounds():
+    from pydantic import ValidationError
+
+    from app.core.config import Settings
+
+    config = Settings()
+    assert config.coach_max_tool_calls == 12
+    assert config.coach_max_tool_rounds == 6
+    for values in (
+        {"coach_max_tool_calls": 0},
+        {"coach_max_tool_calls": 33},
+        {"coach_max_tool_rounds": 0},
+        {"coach_max_tool_rounds": 13},
+    ):
+        with pytest.raises(ValidationError):
+            Settings(**values)

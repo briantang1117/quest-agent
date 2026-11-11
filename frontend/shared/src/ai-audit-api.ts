@@ -24,6 +24,7 @@ export interface AiCallDetail {
   responseText: string | null
 }
 export const AI_ACTIONS = [
+  { value: 'ai.tool_time', label: '本地时间查询' },
   { value: 'ai.coach_turn', label: '陪练对话' },
   { value: 'ai.material_generate', label: '学习资料整理' },
   { value: 'ai.public_import', label: '题目解析' },

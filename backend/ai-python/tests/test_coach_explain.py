@@ -234,3 +234,13 @@ def test_missing_model_is_explicitly_unavailable():
     with TestClient(create_app(settings())) as client:
         response = send(client, {"scope": "student", "message": "你好"})
     assert response.status_code == 503
+
+
+def test_output_failure_logs_safe_shape_and_reason_without_model_text(caplog):
+    provider = StreamProvider(chunks=["PRIVATE_MODEL_TEXT should never appear in logs"])
+    with caplog.at_level("WARNING"):
+        response = run_stream(provider)
+    assert events(response)[-1][0] == "error"
+    assert "shape=text" in caplog.text
+    assert "reason=json_structure_invalid" in caplog.text
+    assert "PRIVATE_MODEL_TEXT" not in caplog.text

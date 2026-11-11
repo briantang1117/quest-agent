@@ -240,3 +240,73 @@ it('接受网页抓取状态和来源', async () => {
   expect(callbacks.onToolStatus).toHaveBeenCalledWith({ tool: 'fetch_page', status: 'running' })
   expect(callbacks.onDone).toHaveBeenCalledWith(value)
 })
+
+it('分发本地时间工具状态且不将其作为网页来源', async () => {
+  const callbacks = {
+    ...options(
+      fetchEvents([
+        ['tool_status', { tool: 'get_current_time', status: 'running' }],
+        ['done', session],
+      ]),
+    ),
+    onToolStatus: vi.fn(),
+  }
+  await streamTurn(session.id, turn, callbacks)
+  expect(callbacks.onToolStatus).toHaveBeenCalledWith({
+    tool: 'get_current_time',
+    status: 'running',
+  })
+  const value = {
+    ...session,
+    messages: [
+      {
+        id: 'time',
+        role: 'assistant',
+        text: '日期',
+        sources: [
+          {
+            tool: 'get_current_time',
+            title: '本地时间',
+            url: 'https://example.com',
+            retrieved_at: '2026-11-11T00:00:00Z',
+          },
+        ],
+      },
+    ],
+  }
+  await expect(
+    streamTurn(session.id, turn, options(fetchEvents([['done', value]]))),
+  ).rejects.toThrow()
+})
+
+it('扩展预算后接受更多来源，但仍限制消息来源数量', async () => {
+  const source = {
+    tool: 'search_web',
+    title: '资料',
+    url: 'https://example.com',
+    retrieved_at: '2026-11-11T00:00:00Z',
+  }
+  const value = {
+    ...session,
+    messages: [
+      {
+        id: 'sources',
+        role: 'assistant',
+        text: '解释',
+        sources: Array.from({ length: 36 }, () => ({ ...source })),
+      },
+    ],
+  }
+  const callbacks = options(fetchEvents([['done', value]]))
+  await streamTurn(session.id, turn, callbacks)
+  expect(callbacks.onDone).toHaveBeenCalledWith(value)
+  const tooMany = {
+    ...value,
+    messages: [
+      { ...value.messages[0]!, sources: Array.from({ length: 97 }, () => ({ ...source })) },
+    ],
+  }
+  await expect(
+    streamTurn(session.id, turn, options(fetchEvents([['done', tooMany]]))),
+  ).rejects.toThrow()
+})
