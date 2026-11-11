@@ -268,6 +268,7 @@ public class StudentCoachService {
                 String prompt=graded?"请基于权威判分讲解这道题，说明思路与容易混淆之处。":text;
                 StringBuilder reply=new StringBuilder();
                 stage="explain";
+                control.onToolStatus(status->emit.accept("tool_status",status));
                 JsonNode meta=ai.explain(context(s,prompt),who.user().id(),traceId,chunk->{
                     control.check();
                     if(reply.length()+chunk.length()>MAX_REPLY_CHARS)throw unavailable();
@@ -277,6 +278,8 @@ public class StudentCoachService {
                 if(reply.toString().isBlank())throw unavailable();
                 assistant=message(state,"assistant",reply.toString());
                 suggestions(assistant,meta.path("items"),graded,canAdvance(s));
+                if(meta.path("sources").isArray()&&!meta.path("sources").isEmpty())
+                    assistant.set("sources",CoachSources.validate(meta.path("sources"),json));
             }
             control.check();
             stage="persist";

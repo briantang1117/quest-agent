@@ -8,6 +8,9 @@ public final class CoachStreamControl implements AutoCloseable {
     private volatile boolean cancelled;
     private volatile Thread worker;
     private Closeable upstream;
+    private java.util.function.Consumer<tools.jackson.databind.JsonNode> toolStatus=ignored->{};
+    public void onToolStatus(java.util.function.Consumer<tools.jackson.databind.JsonNode> listener){toolStatus=listener;}
+    public void toolStatus(tools.jackson.databind.JsonNode status){check();toolStatus.accept(status);}
 
     public synchronized void attachThread(){check();worker=Thread.currentThread();}
     public synchronized void detachThread(){if(worker==Thread.currentThread())worker=null;}

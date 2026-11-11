@@ -234,6 +234,23 @@ class StudentCoachTest {
             return json.readTree("{\"items\":[{\"action\":\"chat\",\"label\":\"举例\",\"text\":\"请举个例子\"},{\"action\":\"next\",\"label\":\"下一题\"}]}");
         }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
     }
+    @Test void toolSourcesPersistAndReloadWithSuccessfulMessage()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");
+        UUID session=UUID.randomUUID();create(alice,session,"chat");
+        org.mockito.Mockito.when(ai.route(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"\"}"));
+        org.mockito.Mockito.doAnswer(call->{
+            java.util.function.Consumer<String> sink=call.getArgument(3);
+            com.quest.api.coach.CoachStreamControl control=call.getArgument(4);
+            control.toolStatus(json.readTree("{\"tool\":\"search_web\",\"status\":\"running\"}"));sink.accept("有出处的解释");
+            return json.readTree("{\"items\":[],\"sources\":[{\"tool\":\"search_web\",\"title\":\"公开资料\",\"url\":\"https://example.com/reference\",\"retrieved_at\":\"2026-11-11T00:00:00Z\"}]}");
+        }).when(ai).explain(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        String wire=stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","解释概念"));
+        assertThat(wire).contains("event:tool_status");
+        JsonNode messages=done(wire).path("messages");
+        assertThat(messages.get(messages.size()-1).path("sources").get(0).path("title").asText()).isEqualTo("公开资料");
+        JsonNode saved=json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+        assertThat(saved.path("messages")).isEqualTo(messages);
+    }
     @Test void unifiedAnswerStreamPersistsOnceAndKeepsSuggestions()throws Exception{
         String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);seed("vocational_aptitude","published",false);
         UUID session=UUID.randomUUID();JsonNode initial=create(alice,session,"practice");String q=initial.path("currentQuestion").path("id").asText();

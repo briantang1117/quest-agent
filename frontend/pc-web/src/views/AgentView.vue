@@ -78,6 +78,7 @@ let listRevision = 0
 // 仅在服务端 state 确认之前展示乐观消息。
 const optimistic = ref<{ id: string; role: 'user'; text: string } | null>(null)
 // 临时文本不写入会话；done 必须整体替换为持久化结果。
+const toolRunning = ref<'' | 'search_web' | 'fetch_page'>('')
 const streaming = ref('')
 let alive = true,
   revision = 0
@@ -91,6 +92,7 @@ function cancelPending() {
   active = null
   optimistic.value = null
   streaming.value = ''
+  toolRunning.value = ''
   busy.value = false
   loading.value = false
   draft.value = ''
@@ -284,6 +286,10 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
           assertCurrent()
           accept(value)
         },
+        onToolStatus: (status) => {
+          assertCurrent()
+          if (isCurrent()) toolRunning.value = status.status === 'running' ? status.tool : ''
+        },
         onDelta: (text) => {
           assertCurrent()
           if (!isCurrent()) return
@@ -293,12 +299,16 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
         },
         onReset: () => {
           assertCurrent()
-          if (isCurrent()) streaming.value = ''
+          if (isCurrent()) {
+            streaming.value = ''
+            toolRunning.value = ''
+          }
         },
         onDone: (value) => {
           assertCurrent()
           if (!isCurrent()) return
           streaming.value = ''
+          toolRunning.value = ''
           accept(value)
         },
       }),
@@ -309,6 +319,7 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     if (!isCurrent() || deleting.value === id) return
     optimistic.value = null
     streaming.value = ''
+    toolRunning.value = ''
     notifyError(e)
     // 断流不代表服务器回滚；只读恢复，不重发付费 POST。
     if (auth.authenticated && !controller.signal.aborted) {
@@ -336,6 +347,7 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     if (isCurrent()) {
       optimistic.value = null
       streaming.value = ''
+      toolRunning.value = ''
       busy.value = false
       active = null
     }
@@ -454,6 +466,21 @@ watch(
           >
             <span class="message-speaker">{{ message.role === 'assistant' ? '知序' : '我' }}</span>
             <SafeMarkdown class="message-prose" :source="message.text" />
+            <details v-if="message.sources?.length" class="coach-sources">
+              <summary>外部资料，未核验 · {{ message.sources.length }} 个来源</summary>
+              <ul>
+                <li v-for="source in message.sources" :key="source.url">
+                  <a :href="source.url" target="_blank" rel="noopener noreferrer">{{
+                    source.title || source.url
+                  }}</a>
+                  <time :datetime="source.retrieved_at">{{
+                    new Date(source.retrieved_at).toLocaleString('zh-CN', {
+                      timeZone: 'Asia/Shanghai',
+                    })
+                  }}</time>
+                </li>
+              </ul>
+            </details>
             <!-- 题目卡片内联在出题消息里，追问产生的回答不会把它挤到底部。 -->
             <CoachQuestionCard
               v-if="message.question"
@@ -504,7 +531,15 @@ watch(
               >{{ item.label }}</a-button
             >
           </div>
-          <p v-if="busy" class="coach-thinking" role="status">知序正在思考…</p>
+          <p v-if="busy" class="coach-thinking" role="status">
+            {{
+              toolRunning === 'fetch_page'
+                ? '正在读取网页…'
+                : toolRunning
+                  ? '正在检索…'
+                  : '知序正在思考…'
+            }}
+          </p>
           <p v-if="session?.processing && !busy" class="coach-thinking">
             上一条消息仍在处理中。你可以稍后重新打开查看结果，或从左侧菜单删除对话并中断生成。
           </p>
@@ -536,6 +571,23 @@ watch(
   </section>
 </template>
 <style scoped>
+.coach-sources {
+  margin-top: 12px;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
+.coach-sources summary {
+  cursor: pointer;
+}
+.coach-sources li {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.coach-sources time {
+  display: block;
+  margin-top: 2px;
+}
+
 .personal-agent {
   display: grid;
   /* 侧栏固定，对话区吃掉全部剩余宽度，撑满整屏。 */

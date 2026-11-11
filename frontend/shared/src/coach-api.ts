@@ -27,6 +27,16 @@ export interface CoachSuggestion {
   label: string
   text?: string
 }
+export interface CoachSource {
+  tool: 'search_web' | 'fetch_page'
+  title: string
+  url: string
+  retrieved_at: string
+}
+export interface CoachToolStatus {
+  tool: 'search_web' | 'fetch_page'
+  status: 'running' | 'completed' | 'failed'
+}
 export interface CoachMessage {
   id: string
   role: 'user' | 'assistant'
@@ -37,6 +47,7 @@ export interface CoachMessage {
   result?: CoachResult
   /** 只出现在最后一条消息上；前端循环渲染，不自造产品动作。 */
   suggestions?: CoachSuggestion[]
+  sources?: CoachSource[]
 }
 export interface CoachSession {
   id: string
@@ -122,6 +133,7 @@ export interface StreamTurnOptions {
   onReset: () => void
   onDone: (session: CoachSession) => void
   onSuggestions?: (items: CoachSuggestion[]) => void
+  onToolStatus?: (status: CoachToolStatus) => void
 }
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -162,6 +174,33 @@ function isSuggestions(value: unknown): value is CoachSuggestion[] {
     )
   )
 }
+function isSources(value: unknown): value is CoachSource[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 18 &&
+    value.every((item) => {
+      if (
+        !object(item) ||
+        !['search_web', 'fetch_page'].includes(String(item.tool)) ||
+        typeof item.title !== 'string' ||
+        item.title.length > 200 ||
+        typeof item.url !== 'string' ||
+        item.url.length > 2048 ||
+        typeof item.retrieved_at !== 'string' ||
+        !Number.isFinite(Date.parse(item.retrieved_at))
+      )
+        return false
+      try {
+        const url = new URL(item.url)
+        return (
+          ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.hash
+        )
+      } catch {
+        return false
+      }
+    })
+  )
+}
 function isSession(value: unknown): value is CoachSession {
   return (
     object(value) &&
@@ -183,7 +222,8 @@ function isSession(value: unknown): value is CoachSession {
         typeof item.text === 'string' &&
         (item.question == null || isQuestion(item.question)) &&
         (item.result == null || isResult(item.result)) &&
-        (item.suggestions == null || isSuggestions(item.suggestions)),
+        (item.suggestions == null || isSuggestions(item.suggestions)) &&
+        (item.sources == null || isSources(item.sources)),
     )
   )
 }
@@ -200,7 +240,8 @@ export async function streamTurn(
     signal: options.signal,
     fetcher: options.fetcher,
     onEvent(event) {
-      if (!['state', 'delta', 'reset', 'suggestions', 'done'].includes(event.event)) return
+      if (!['state', 'delta', 'reset', 'suggestions', 'tool_status', 'done'].includes(event.event))
+        return
       const value: unknown = JSON.parse(event.data)
       if (event.event === 'state' || event.event === 'done') {
         if (
@@ -214,6 +255,14 @@ export async function streamTurn(
       } else if (event.event === 'delta') {
         if (!object(value) || typeof value.text !== 'string') throw new Error('无效的陪练文本事件')
         options.onDelta(value.text)
+      } else if (event.event === 'tool_status') {
+        if (
+          !object(value) ||
+          !['search_web', 'fetch_page'].includes(String(value.tool)) ||
+          !['running', 'completed', 'failed'].includes(String(value.status))
+        )
+          throw new Error('无效的陪练工具状态')
+        options.onToolStatus?.(value as unknown as CoachToolStatus)
       } else if (event.event === 'reset') {
         if (!object(value)) throw new Error('无效的陪练重置事件')
         options.onReset()

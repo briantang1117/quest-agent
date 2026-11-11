@@ -30,7 +30,7 @@ class DeepSeekSearchProvider(ToolProvider):
         if (
             not isinstance(query, str)
             or not query.strip()
-            or not 1 <= len(query) <= 128
+            or not 1 <= len(query) <= 200
             or type(count) is not int
             or not 1 <= count <= 50
             or type(need_content) is not bool
@@ -38,7 +38,7 @@ class DeepSeekSearchProvider(ToolProvider):
             raise ServiceError(
                 400,
                 40001,
-                "Search要求query为1–128字符、count为1–50整数、need_content为布尔值",
+                "Search要求query为1–200字符、count为1–50整数、need_content为布尔值",
             )
         payload = await self._post(
             "/tools/search", {"query": query, "count": count, "need_content": need_content}
@@ -98,9 +98,18 @@ class DeepSeekFetchProvider(ToolProvider):
         DNS绑定和每跳公网校验，不能将此客户端当作远端SSRF沙箱。
         """
         await validate_public_url(url, self._resolver, self._settings.llm_timeout_seconds)
-        payload = await self._post("/tools/fetch", {"url": url})
+        payload = await self._post("/tools/fetch", {"url": url}, max_response_bytes=1024 * 1024)
         title, content = payload.get("title"), payload.get("content")
         if not isinstance(title, str) or not isinstance(content, str) or not content.strip():
+            raise self._invalid_output()
+        for key in ("content_type", "mime_type"):
+            if key in payload and (
+                not isinstance(payload[key], str)
+                or payload[key].split(";", 1)[0].strip().lower()
+                not in {"text/plain", "text/html", "application/xhtml+xml"}
+            ):
+                raise self._invalid_output()
+        if "\x00" in content or content.lstrip().startswith(("%PDF-", "\x89PNG", "PK\x03\x04")):
             raise self._invalid_output()
         # 若工具显式报告最终URL，再次做公网/DNS校验；不可把它当作事前隔离保证。
         for key in ("url", "final_url"):

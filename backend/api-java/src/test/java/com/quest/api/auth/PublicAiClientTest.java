@@ -102,4 +102,30 @@ class PublicAiClientTest {
         org.mockito.Mockito.verify(audit).record(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("ai.coach_explain"),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.eq("t"),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.notNull(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.eq(1),org.mockito.ArgumentMatchers.isNull());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"search_web","fetch_page"})
+    void acceptsToolStatusAndStructuredSources(String tool)throws Exception{
+        var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        var toolAudit=org.mockito.Mockito.mock(com.quest.api.coach.AiCallAudit.class);
+        server.createContext("/internal/coach-explain",exchange->{
+            exchange.getRequestBody().readAllBytes();
+            String wire="event: tool_status\ndata: {\"tool\":\"search_web\",\"status\":\"running\"}\n\n"
+                +"event: delta\ndata: {\"text\":\"解释\"}\n\n"
+                +"event: sources\ndata: {\"items\":[{\"tool\":\"search_web\",\"title\":\"公开资料\",\"url\":\"https://example.com/reference\",\"retrieved_at\":\"2026-11-11T00:00:00Z\"}]}\n\n"
+                +"event: tool_audit\ndata: {\"tool\":\"search_web\",\"parameter_hash\":\""+"0".repeat(64)+"\",\"result_count\":1,\"duration_ms\":12,\"failure\":\"ok\"}\n\n"
+                +"event: done\ndata: {}\n\n";
+            byte[] body=wire.replace("search_web",tool).getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type","text/event-stream");exchange.sendResponseHeaders(200,body.length);
+            exchange.getResponseBody().write(body);exchange.close();
+        });server.start();
+        try{
+            var client=new PublicAiClient(new ObjectMapper(),"http://127.0.0.1:"+server.getAddress().getPort(),"token","secret-secret-secret-secret-secret",toolAudit);
+            var statuses=new java.util.ArrayList<tools.jackson.databind.JsonNode>();
+            var result=client.coachExplain(java.util.Map.of(),new PublicAiClient.Caller(1L,"tools"),x->{},statuses::add,new com.quest.api.coach.CoachStreamControl());
+            org.mockito.Mockito.verify(toolAudit).record(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq(tool.equals("search_web")?"ai.tool_search":"ai.tool_fetch"),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.eq("tools"),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.eq(12L),org.mockito.ArgumentMatchers.eq(1),org.mockito.ArgumentMatchers.isNull());
+            assertThat(statuses).hasSize(1);
+            assertThat(result.path("sources").get(0).path("title").asText()).isEqualTo("公开资料");
+        }finally{server.stop(0);}
+    }
+
 }

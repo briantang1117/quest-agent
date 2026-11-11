@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.agent import coach_search
 from app.agent.coach_graph import MATERIAL_INTENT_PROMPT, SYLLABUS_PROMPT, CoachReply, Suggestion
+from app.agent.coach_tools import explain_with_tools
 from app.core.errors import ServiceError, envelope
 from app.llm.json_reply_stream import JsonReplyStream
 
@@ -207,7 +208,7 @@ def _event(name: str, data: dict) -> str:
 
 @router.post("/internal/coach-explain")
 async def coach_explain(payload: CoachRequest, request: Request):
-    """一次模型调用流出正文，完整验证后才发送建议与 done；失败不重试。"""
+    """可选工具循环；最终正文完整验证后才发送来源、建议与 done。"""
     provider = _provider(payload, request)
     instruction = (
         "负责普通聊天、通用知识答疑或已作答题目的讲解，不识别或执行轮次动作。"
@@ -216,10 +217,19 @@ async def coach_explain(payload: CoachRequest, request: Request):
         "chat的text是用户下次要发送的话。建议贴合场景，纯答疑不要硬推下一题。"
         "不能在其他字段夹带正文、答案、判分或执行结果。"
     )
-    # 时效性问题才联网检索；失败降级为无检索，不能影响回答本身。
-    external = await coach_search.retrieve(
-        getattr(request.app.state, "search_provider", None), payload.message
+    search = getattr(request.app.state, "search_provider", None)
+    fetch = getattr(request.app.state, "fetch_provider", None)
+    unanswered = payload.question is not None and payload.result is None
+    use_tools = (
+        getattr(getattr(request.app.state, "settings", None), "coach_tools_enabled", False)
+        and callable(getattr(provider, "stream_chat", None))
+        and (search is not None or fetch is not None)
+        and not unanswered
     )
+    # 新循环不再运行关键词检索；未作答题目的两条路径均禁止外发。
+    external = None
+    if not use_tools and not unanswered:
+        external = await coach_search.retrieve(search, payload.message)
     if external:
         instruction += (
             "已附带外部检索结果，仅作参考：来源需注明，不得当作已核验结论，"
@@ -229,14 +239,36 @@ async def coach_explain(payload: CoachRequest, request: Request):
 
     async def events():
         parser = JsonReplyStream()
+        sources = []
         try:
-            async with aclosing(
-                provider.stream_text(messages, json_mode=True, long_form=True)
-            ) as stream:
-                async for chunk in stream:
-                    text = parser.feed(chunk)
-                    if text:
-                        yield _event("delta", {"text": text})
+            if use_tools:
+                async with aclosing(
+                    explain_with_tools(provider, search, messages, fetch=fetch)
+                ) as stream:
+                    async for event in stream:
+                        if event["type"] == "tool_status":
+                            yield _event(
+                                "tool_status", {"tool": event["tool"], "status": event["status"]}
+                            )
+                        elif event["type"] == "tool_audit":
+                            yield _event(
+                                "tool_audit",
+                                {key: value for key, value in event.items() if key != "type"},
+                            )
+                        elif event["type"] == "sources":
+                            sources = event["items"]
+                        elif event["type"] == "content":
+                            text = parser.feed(event["text"])
+                            if text:
+                                yield _event("delta", {"text": text})
+            else:
+                async with aclosing(
+                    provider.stream_text(messages, json_mode=True, long_form=True)
+                ) as stream:
+                    async for chunk in stream:
+                        text = parser.feed(chunk)
+                        if text:
+                            yield _event("delta", {"text": text})
             result = ExplanationReply.model_validate(parser.finish())
         except ServiceError as failure:
             _diagnose("coach_explain", failure, request)
@@ -247,6 +279,8 @@ async def coach_explain(payload: CoachRequest, request: Request):
             # 半截正文不可回收；Java/前端必须丢弃，不能将其保存为成功回复。
             yield _event("error", {"code": 50203})
             return
+        if sources:
+            yield _event("sources", {"items": sources})
         yield _event("suggestions", {"items": result.suggestions})
         yield _event("done", {})
 

@@ -235,7 +235,7 @@ def test_search_request_and_source_metadata():
     "query,count,need_content",
     [
         ("", 1, False),
-        ("x" * 129, 1, False),
+        ("x" * 201, 1, False),
         ("x", 0, False),
         ("x", 51, False),
         ("x", True, False),
@@ -502,7 +502,7 @@ def test_search_accepts_exact_bounds_and_empty_results():
         result = call(
             DeepSeekSearchProvider(tool_settings(), transport=transport_json({"results": []})),
             "search",
-            "x" * 128,
+            "x" * 200,
             count=count,
         )
         assert result.results == ()
@@ -617,3 +617,58 @@ def test_fetch_never_follows_upstream_http_redirect():
         )
     assert error.value.status == 502
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"title": "文件", "content": "二进制伪装正文", "content_type": "application/pdf"},
+        {"title": "文件", "content": "二进制伪装正文", "mime_type": "image/png"},
+        {"title": "文件", "content": "%PDF-1.7 synthetic"},
+        {"title": "文件", "content": "text\u0000binary"},
+        {"title": "文件", "content": "PK\u0003\u0004zip"},
+    ],
+)
+def test_fetch_rejects_reported_binary_or_nontext_content(payload):
+    with pytest.raises(ServiceError):
+        call(
+            DeepSeekFetchProvider(
+                tool_settings(), transport=transport_json(payload), resolver=public_dns
+            ),
+            "fetch",
+            "https://example.com/reference",
+        )
+
+
+def test_fetch_bounds_raw_response_before_json_decoding():
+    with pytest.raises(ServiceError):
+        call(
+            DeepSeekFetchProvider(
+                tool_settings(),
+                transport=transport_json(
+                    {
+                        "title": "巨大网页",
+                        "content": "x" * (1024 * 1024),
+                    }
+                ),
+                resolver=public_dns,
+            ),
+            "fetch",
+            "https://example.com/reference",
+        )
+
+
+def test_fetch_refuses_binary_http_content_type():
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            content=b'{"title":"file","content":"binary"}',
+            headers={"Content-Type": "application/octet-stream"},
+        )
+    )
+    with pytest.raises(ServiceError):
+        call(
+            DeepSeekFetchProvider(tool_settings(), transport=transport, resolver=public_dns),
+            "fetch",
+            "https://example.com/reference",
+        )

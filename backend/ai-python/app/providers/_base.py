@@ -62,9 +62,29 @@ class ToolProvider:
     def _invalid_output(self) -> ServiceError:
         return ServiceError(502, 50202, f"{self._capability}上游返回无效或不完整数据")
 
-    async def _post(self, path: str, body: dict) -> dict:
+    async def _post(self, path: str, body: dict, *, max_response_bytes: int | None = None) -> dict:
         try:
-            response = await self._client.post(f"{self._base_url}{path}", json=body)
+            if max_response_bytes is None:
+                response = await self._client.post(f"{self._base_url}{path}", json=body)
+            else:
+                async with self._client.stream(
+                    "POST", f"{self._base_url}{path}", json=body
+                ) as upstream:
+                    raw = bytearray()
+                    async for block in upstream.aiter_bytes(chunk_size=16384):
+                        if len(raw) + len(block) > max_response_bytes:
+                            raise self._invalid_output()
+                        raw.extend(block)
+                    content_type = upstream.headers.get("Content-Type", "").split(";", 1)[0].lower()
+                    if (
+                        200 <= upstream.status_code < 300
+                        and content_type
+                        and not (
+                            content_type == "application/json" or content_type.endswith("+json")
+                        )
+                    ):
+                        raise self._invalid_output()
+                    response = httpx.Response(upstream.status_code, content=bytes(raw))
         except httpx.TimeoutException:
             raise ServiceError(504, 50401, f"{self._capability}上游请求超时") from None
         except httpx.HTTPError:

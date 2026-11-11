@@ -20,7 +20,7 @@ from app.core.security import NonceStore, authenticate
 from app.llm.base import LLMProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
 from app.providers.ark import ArkEmbeddingProvider
-from app.providers.deepseek import DeepSeekSearchProvider
+from app.providers.deepseek import DeepSeekFetchProvider, DeepSeekSearchProvider
 
 
 def create_app(
@@ -29,6 +29,7 @@ def create_app(
     provider: LLMProvider | None = None,
     embedding_provider: ArkEmbeddingProvider | None = None,
     search: DeepSeekSearchProvider | None = None,
+    fetch: DeepSeekFetchProvider | None = None,
 ) -> FastAPI:
     config = settings if settings is not None else Settings()
 
@@ -38,12 +39,15 @@ def create_app(
         if provider is None and config.llm_configured:
             application.state.provider = OpenAICompatibleProvider(config)
         application.state.search_provider = search
+        application.state.fetch_provider = fetch
         application.state.embedding_provider = embedding_provider
         try:
             if embedding_provider is None and config.embedding_configured:
                 application.state.embedding_provider = ArkEmbeddingProvider(config)
-            if config.search_configured:
+            if search is None and config.search_configured:
                 application.state.search_provider = DeepSeekSearchProvider(config)
+            if fetch is None and config.fetch_configured:
+                application.state.fetch_provider = DeepSeekFetchProvider(config)
             application.state.candidate_graph = (
                 build_candidate_graph(
                     application.state.provider, search=application.state.search_provider
@@ -70,6 +74,8 @@ def create_app(
                 await application.state.embedding_provider.aclose()
             if application.state.search_provider is not None:
                 await application.state.search_provider.aclose()
+            if application.state.fetch_provider is not None:
+                await application.state.fetch_provider.aclose()
             if application.state.provider is not None:
                 await application.state.provider.aclose()
 

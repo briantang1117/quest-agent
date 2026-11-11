@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     background_llm_timeout_seconds: float = Field(default=180, gt=0, le=600)
     llm_temperature: float = Field(default=0, ge=0, le=2)
     llm_max_tokens: int = Field(default=4096, ge=1, le=32768)
+    coach_tools_enabled: bool = True
     # 讲解类回答（多主体对比、长解析）容易撞4096上限被截断；单独给更高预算。
     explanation_max_tokens: int = Field(default=8192, ge=1, le=32768)
     # 资料整理独立预算，不放大普通聊天的上下文和等待时间。

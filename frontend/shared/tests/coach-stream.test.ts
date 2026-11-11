@@ -150,3 +150,93 @@ describe('coach turn stream', () => {
     expect(callbacks.onDone).not.toHaveBeenCalled()
   })
 })
+
+it('分发检索状态并接受消息结构化来源', async () => {
+  const value = {
+    ...session,
+    messages: [
+      {
+        id: 'm',
+        role: 'assistant',
+        text: '解释',
+        sources: [
+          {
+            tool: 'search_web',
+            title: '公开资料',
+            url: 'https://example.com/reference',
+            retrieved_at: '2026-11-11T00:00:00Z',
+          },
+        ],
+      },
+    ],
+  }
+  const callbacks = {
+    ...options(
+      fetchEvents([
+        ['tool_status', { tool: 'search_web', status: 'running' }],
+        ['done', value],
+      ]),
+    ),
+    onToolStatus: vi.fn(),
+  }
+  await streamTurn(session.id, turn, callbacks)
+  expect(callbacks.onToolStatus).toHaveBeenCalledWith({ tool: 'search_web', status: 'running' })
+  expect(callbacks.onDone).toHaveBeenCalledWith(value)
+})
+
+it('拒绝来源危险链接', async () => {
+  const value = {
+    ...session,
+    messages: [
+      {
+        id: 'm',
+        role: 'assistant',
+        text: '解释',
+        sources: [
+          {
+            tool: 'search_web',
+            title: '危险',
+            url: 'javascript:alert(1)',
+            retrieved_at: '2026-11-11T00:00:00Z',
+          },
+        ],
+      },
+    ],
+  }
+  await expect(
+    streamTurn(session.id, turn, options(fetchEvents([['done', value]]))),
+  ).rejects.toThrow()
+})
+
+it('接受网页抓取状态和来源', async () => {
+  const value = {
+    ...session,
+    messages: [
+      {
+        id: 'fetch-message',
+        role: 'assistant',
+        text: '解释',
+        sources: [
+          {
+            tool: 'fetch_page',
+            title: '网页',
+            url: 'https://example.com/page',
+            retrieved_at: '2026-11-11T00:00:00Z',
+          },
+        ],
+      },
+    ],
+  }
+  const callbacks = {
+    ...options(
+      fetchEvents([
+        ['tool_status', { tool: 'fetch_page', status: 'running' }],
+        ['done', value],
+      ]),
+    ),
+    onToolStatus: vi.fn(),
+  }
+  await streamTurn(session.id, turn, callbacks)
+  expect(callbacks.onToolStatus).toHaveBeenCalledWith({ tool: 'fetch_page', status: 'running' })
+  expect(callbacks.onDone).toHaveBeenCalledWith(value)
+})

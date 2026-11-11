@@ -8,6 +8,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.errors import ServiceError
+from app.llm.tool_stream import ToolStream
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,53 @@ class OpenAICompatibleProvider:
                 type(exc).__name__,
             )
             raise ServiceError(502, 50201, "LLM upstream returned an invalid stream") from exc
+
+    async def stream_chat(self, messages, *, tools, tool_choice="auto"):
+        """独立工具流；旧正文流继续拒绝工具调用，失败均不自动重试。"""
+        body = self._completion_body(
+            messages, json_mode=False, max_tokens=self._settings.explanation_max_tokens
+        )
+        body.update(tools=tools, tool_choice=tool_choice)
+        parser = ToolStream()
+        try:
+            async with self._client.stream(
+                "POST", f"{self._settings.llm_base_url}/chat/completions", json=body
+            ) as response:
+                if response.status_code in {400, 422}:
+                    # 仅接受明确的结构化“不支持工具”错误，不能把所有400当成可重试。
+                    raw = bytearray()
+                    async for block in response.aiter_bytes():
+                        if len(raw) + len(block) > 16384:
+                            break
+                        raw.extend(block)
+                    try:
+                        error = json.loads(raw).get("error", {})
+                        unsupported = (
+                            isinstance(error, dict)
+                            and error.get("param") in {"tools", "tool_choice"}
+                            and error.get("code") in {"unsupported_parameter", "unsupported_value"}
+                        )
+                    except (ValueError, AttributeError, TypeError):
+                        unsupported = False
+                    if unsupported:
+                        raise ServiceError(502, 50205, "LLM upstream does not support tools")
+                response.raise_for_status()
+                async for payload in _sse_payloads(response):
+                    if payload == "[DONE]":
+                        final = parser.finish()
+                        if final:
+                            yield final
+                        return
+                    event = parser.feed(json.loads(payload))
+                    if event:
+                        yield event
+                raise ValueError("missing DONE")
+        except httpx.TimeoutException as exc:
+            raise ServiceError(504, 50401, "LLM upstream timed out") from exc
+        except httpx.HTTPError as exc:
+            raise ServiceError(502, 50201, "LLM upstream request failed") from exc
+        except (ValueError, KeyError, IndexError, TypeError, RecursionError) as exc:
+            raise ServiceError(502, 50204, "LLM upstream returned an invalid tool stream") from exc
 
     async def aclose(self) -> None:
         await self._client.aclose()

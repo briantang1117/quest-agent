@@ -65,9 +65,13 @@ public class PublicAiClient {
     private JsonNode post(String path,Object payload,int maxResponse){return post(path,payload,maxResponse,null);}
     private static final java.util.concurrent.ScheduledExecutorService DEADLINES=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"coach-stream-deadline");t.setDaemon(true);return t;});
     /** 有界读取内部 SSE，截止时间覆盖响应头及响应体；任何出口都记录一次审计。 */
+    public JsonNode coachExplain(Object payload,Caller caller,java.util.function.Consumer<String> onDelta,java.util.function.Consumer<JsonNode> onStatus,com.quest.api.coach.CoachStreamControl control){
+        control.onToolStatus(onStatus);return coachExplain(payload,caller,onDelta,control);
+    }
     public JsonNode coachExplain(Object payload,Caller caller,java.util.function.Consumer<String> onDelta,com.quest.api.coach.CoachStreamControl control){
         long started=System.nanoTime();String path="/internal/coach-explain";
         StringBuilder text=new StringBuilder();JsonNode suggestions=json.createObjectNode().set("items",json.createArrayNode());
+        JsonNode sources=json.createArrayNode();
         Throwable auditFailure=null;
         var deadline=DEADLINES.schedule(control::close,95,java.util.concurrent.TimeUnit.SECONDS);
         try{
@@ -89,7 +93,7 @@ public class PublicAiClient {
                 if(!response.headers().firstValue("Content-Type").orElse("").toLowerCase(Locale.ROOT).startsWith("text/event-stream"))throw new UserFailure(503,50204,"AI服务流格式错误");
                 var decoder=StandardCharsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT);
                 var reader=new java.io.InputStreamReader(stream,decoder);
-                String event="";StringBuilder line=new StringBuilder(),data=new StringBuilder();int total=0;boolean done=false;
+                String event="";StringBuilder line=new StringBuilder(),data=new StringBuilder();int total=0,toolAudits=0;boolean done=false;
                 for(int ch;(ch=reader.read())!=-1;){
                     control.check();if(++total>128*1024)throw new UserFailure(503,50204,"AI服务流超出上限");
                     if(ch!='\n'){if(ch!='\r')line.append((char)ch);if(line.length()>32768)throw new UserFailure(503,50204,"AI服务事件超出上限");continue;}
@@ -103,6 +107,22 @@ public class PublicAiClient {
                             text.append(chunk);onDelta.accept(chunk);
                         }else if(event.equals("suggestions")){
                             JsonNode parsed=json.readTree(data.toString());if(!parsed.path("items").isArray()||parsed.path("items").size()>4)throw new UserFailure(503,50204,"AI建议格式错误");suggestions=parsed;
+                        }else if(event.equals("tool_status")){
+                            JsonNode parsed=json.readTree(data.toString());
+                            if(!Set.of("search_web","fetch_page").contains(parsed.path("tool").asText())||!Set.of("running","completed","failed").contains(parsed.path("status").asText()))throw new UserFailure(503,50204,"AI工具状态格式错误");
+                            control.toolStatus(json.createObjectNode().put("tool",parsed.path("tool").asText()).put("status",parsed.path("status").asText()));
+                        }else if(event.equals("tool_audit")){
+                            if(++toolAudits>6)throw new UserFailure(503,50204,"AI工具审计超过上限");
+                            JsonNode parsed=json.readTree(data.toString());
+                            if(!Set.of("search_web","fetch_page").contains(parsed.path("tool").asText())||!parsed.path("parameter_hash").asText().matches("[0-9a-f]{64}")
+                                ||!parsed.path("result_count").isInt()||parsed.path("result_count").asInt()<0||parsed.path("result_count").asInt()>3
+                                ||!parsed.path("duration_ms").isIntegralNumber()||parsed.path("duration_ms").asLong()<0||parsed.path("duration_ms").asLong()>95000
+                                ||!Set.of("ok","timeout","unavailable","cancelled").contains(parsed.path("failure").asText()))throw new UserFailure(503,50204,"AI工具审计格式错误");
+                            var summary=json.createObjectNode().put("parameter_hash",parsed.path("parameter_hash").asText()).put("result_count",parsed.path("result_count").asInt()).put("failure",parsed.path("failure").asText());
+                            audit.record(caller==null?null:caller.actor(),parsed.path("tool").asText().equals("search_web")?"ai.tool_search":"ai.tool_fetch",null,caller==null?null:caller.traceId(),summary,summary,
+                                parsed.path("failure").asText().equals("ok")?null:new UserFailure(503,50203,"工具调用失败"),parsed.path("duration_ms").asLong(),1,null);
+                        }else if(event.equals("sources")){
+                            sources=com.quest.api.coach.CoachSources.validate(json.readTree(data.toString()).path("items"),json);
                         }else if(!event.isEmpty())throw new UserFailure(503,50204,"未知AI事件");
                         event="";data.setLength(0);continue;
                     }
@@ -111,7 +131,7 @@ public class PublicAiClient {
                     else if(!value.startsWith(":"))throw new UserFailure(503,50204,"AI服务流格式错误");
                 }
                 if(!done||text.toString().isBlank())throw new UserFailure(503,50204,"AI回答未完整返回");
-                control.check();return suggestions;
+                control.check();((tools.jackson.databind.node.ObjectNode)suggestions).set("sources",sources);return suggestions;
             }finally{control.detach();}
         }catch(InterruptedException failure){auditFailure=failure;Thread.currentThread().interrupt();throw new UserFailure(503,50332,"本次生成已中断，未自动重试");}
         catch(RuntimeException failure){auditFailure=failure;throw failure;}

@@ -20,3 +20,11 @@ class MaterialProvider(Protocol):
     """资料生成独立能力，旧陪练和抽取替身无需实现。"""
 
     async def generate_material(self, messages: list[dict[str, str]]) -> str: ...
+
+
+class ToolChatProvider(Protocol):
+    """工具调用扩展接口；仅支持工具调用的 Provider 实现，原文本接口保持兼容。"""
+
+    def stream_chat(
+        self, messages: list[dict], *, tools: list[dict], tool_choice: str = "auto"
+    ) -> AsyncIterator[dict]: ...

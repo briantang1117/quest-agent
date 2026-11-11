@@ -14,6 +14,7 @@ SECRET = "test-hmac-secret-at-least-32-characters"
 def isolated_environment(monkeypatch):
     for name in (
         "APP_ENV",
+        "COACH_TOOLS_ENABLED",
         "INTERNAL_SERVICE_TOKEN",
         "INTERNAL_HMAC_SECRET",
         "LLM_BASE_URL",
