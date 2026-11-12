@@ -91,7 +91,12 @@ def test_material_content_and_wire_output_are_bounded():
                 yield b":" + b"x" * 4093 + b"\n\n"
 
     with pytest.raises(ServiceError):
-        collect(provider_for(lambda request: httpx.Response(200, stream=ExcessiveWire())))
+        collect(
+            provider_for(
+                lambda request: httpx.Response(200, stream=ExcessiveWire()),
+                material_max_stream_bytes=1024 * 1024,
+            )
+        )
     with pytest.raises(ServiceError):
         collect(
             provider_for(lambda request: httpx.Response(200, content=sse_body(["x" * 1000] * 1049)))
@@ -112,6 +117,14 @@ def test_material_request_input_is_bounded_before_network_call():
         )
     assert error.value.status == 413
     assert not calls
+
+
+def test_material_accepts_large_wire_with_small_valid_content():
+    # 模拟逐token事件的包装成本超过普通聊天1MiB上限。
+    content = json.dumps({"title": "复习", "markdown": "文" * 15000}, ensure_ascii=False)
+    body = sse_body(list(content))
+    assert len(body) > 1024 * 1024
+    assert collect(provider_for(lambda request: httpx.Response(200, content=body))) == content
 
 
 @pytest.mark.parametrize(
@@ -176,6 +189,7 @@ def test_material_config_defaults_do_not_expand_regular_chat_limits():
     assert config.material_max_input_bytes == 8 * 1024 * 1024
     assert config.material_max_output_chars == 100000
     assert config.material_max_output_tokens == 32768
+    assert config.material_max_stream_bytes == 16 * 1024 * 1024
     assert config.material_llm_timeout_seconds == 600
     assert config.llm_timeout_seconds == 30
     assert config.llm_max_tokens == 4096

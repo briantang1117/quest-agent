@@ -38,6 +38,22 @@ public class PublicAiClient {
     public JsonNode reviewSyllabus(String examType,JsonNode sections) { return post("/internal/syllabus-review",Map.of("scope","admin","examType",examType,"sections",sections),512*1024,null); }
     public JsonNode embedSyllabus(List<String> texts,String scope) { return post("/internal/syllabus-embed",Map.of("scope",scope,"texts",texts),4*1024*1024,null); }
     public JsonNode inspectSyllabus(byte[] pdf) { return post("/internal/syllabus-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),6*1024*1024,null); }
+    /** 本地排版，不调用模型；私人正文与PDF不进入审计原文。 */
+    public byte[] materialPdf(String title,String markdown,Caller caller){
+        long started=System.nanoTime();Throwable failure=null;byte[] pdf=null;
+        try{
+            var result=doPost("/internal/material-pdf",Map.of("title",title,"markdown",markdown),12*1024*1024,caller,"material.pdf_export",started,Duration.ofSeconds(60));
+            try{pdf=Base64.getDecoder().decode(result.path("pdf_base64").asText());}
+            catch(IllegalArgumentException invalid){throw new UserFailure(503,50242,"PDF排版返回无效文件");}
+            if(pdf.length<5||pdf.length>8*1024*1024||!new String(pdf,0,5,StandardCharsets.US_ASCII).equals("%PDF-"))throw new UserFailure(503,50242,"PDF排版返回无效文件");
+            return pdf;
+        }catch(RuntimeException error){failure=error;throw error;}
+        finally{
+            var input=json.createObjectNode().put("bytes",markdown.getBytes(StandardCharsets.UTF_8).length).put("sha256",com.quest.api.materials.MaterialDigest.of(markdown.getBytes(StandardCharsets.UTF_8)));
+            var output=json.createObjectNode();if(pdf!=null)output.put("bytes",pdf.length);
+            audit.record(caller==null?null:caller.actor(),"material.pdf_export",null,caller==null?null:caller.traceId(),input,output,failure,elapsed(started),0,null);
+        }
+    }
     /** 私人资料采用独立长预算，审计仅记录摘要，不暴露整份私人上下文。 */
     public JsonNode generateMaterial(Object payload,Caller caller){
         long started=System.nanoTime();Throwable failure=null;JsonNode result=null;
@@ -206,7 +222,7 @@ public class PublicAiClient {
             }
             if(!envelope.path("code").isIntegralNumber() || envelope.path("code").asInt()!=0 || !envelope.path("data").isObject())throw new IllegalStateException();
             JsonNode data=envelope.get("data");
-            if(!action.equals("ai.material_generate"))audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
+            if(!Set.of("ai.material_generate","material.pdf_export").contains(action))audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
             return data;
         } catch(InterruptedException failure){Thread.currentThread().interrupt();throw new UserFailure(503,50322,"AI处理已中断，未自动重试");}
         // UserFailure 已带明确原因（例如上游业务码），不能被下面兜底覆盖成通用文案。

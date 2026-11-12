@@ -97,3 +97,23 @@ def test_callback_failure_does_not_follow_redirect_or_retry(failure):
 def test_callback_configuration_rejects_credentials_and_non_http_addresses(url):
     with pytest.raises(ValidationError):
         settings(coach_api_url=url)
+
+
+def test_callback_logs_material_gate_without_private_response(caplog):
+    def handler(request):
+        return httpx.Response(
+            503, json={"code": 50341, "message": "private-response", "data": None}
+        )
+
+    async def run():
+        client = CoachWorkflowClient(settings(), transport=httpx.MockTransport(handler))
+        try:
+            with pytest.raises(ServiceError):
+                await client.step("private-grant", "create_material")
+        finally:
+            await client.aclose()
+
+    asyncio.run(run())
+    assert "step=create_material status=503 code=50341" in caplog.text
+    assert "private-response" not in caplog.text
+    assert "private-grant" not in caplog.text

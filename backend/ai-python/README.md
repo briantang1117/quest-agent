@@ -22,6 +22,7 @@
 | `POST /internal/syllabus-review`   | 管理员考纲 AI 整理，不启用、不发布                                           |
 | `POST /internal/syllabus-embed`    | 内部批量文本嵌入，契约接受 admin/student；返回向量，不写库                   |
 | `POST /internal/material-generate` | 普通用户从 Java 冻结的公开对话整理私人资料，返回标题与 Markdown              |
+| `POST /internal/material-pdf` | Java读取本人已完成资料后，调用本地A4排版，返回PDF的Base64，不调用模型 |
 
 路由与输入契约在 `app/api/`。内部接口统一要求 `X-Service-Token`、`X-Timestamp`、`X-Nonce`、`X-Signature`；HMAC-SHA256 签名原文依次为时间戳、nonce、大写 HTTP 方法、URL path、原始请求体 SHA256，以换行连接。时间窗口为 300 秒，拒绝重复鉴权头、重放及 query 参数。响应带 `X-Trace-Id`，错误不回显原始输入与密钥。内部认证未配置时拒绝服务；生产模式要求两项内部密钥分别至少 32 字符。Swagger/OpenAPI 路由关闭。详见 `app/core/security.py`、`app/core/config.py`。
 
@@ -53,6 +54,14 @@ SSE 包含 `delta`、工具状态/审计、来源、建议及 `done` 或 `error`
 `app/api/materials.py` 校验公开消息、题卡及已揭示判分的一致性；只接受普通用户。`app/agent/materials.py` 做一次长模型调用，不检索、不调用工具、不自动重试；未作答题只能保留公开题干和选项。Java 负责冻结对话范围、持久化与后续读取权限。
 
 默认输入正文字符上限 1,000,000、原始请求体上限 8 MiB（验签前有界读取）；输出 Markdown 最多 100,000 字符、模型返回最多 1 MiB。资料单独配置最多 32768 输出 token、600 秒超时，不扩大普通聊天预算。
+
+资料结构按纯问答、考纲讨论、刷题或混合内容选择，不固定套用错题模板；仅在有题目、判分时保留对应章节。提示词要求结论去重、来源分层、保留适用条件，不推断用户错因，不把题库解析或讲解当作官方原文。此为生成要求，具体资料质量仍需真实输出验收。
+
+已完成资料可下载 Markdown 或 PDF。PDF 使用 ReportLab 与 markdown-it-py 本地生成 A4，嵌入中文字体，支持标题、列表、引用、基本表格（最多12列、重复表头和跨页）、代码块与页码；图片仅保留说明，不联网取图，不执行HTML/脚本。公式和图表暂不专门排版。Python每进程最多并行两份导出，输入正文最多100000字符，PDF最多8 MiB；不存第二份文件，不改原资料状态，不新增模型调用。
+
+可在 Python `.env` 设置 `MATERIAL_PDF_FONT_PATH` 为含中文的 TrueType 字体路径。留空自动查找 macOS 的 `/System/Library/Fonts/Supplemental/Arial Unicode.ttf`、Linux 的 `/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc` 或 Windows 的 `C:/Windows/Fonts/msyh.ttc`；字体缺失返回50342。Docker镜像安装文泉驿字体；新增依赖使用 `uv sync --frozen` 安装，修改后重启Python与Java API。浏览器刷新后，已有ready资料即可导出，无需重新生成。
+
+可另设 `MATERIAL_PDF_BOLD_FONT_PATH` 为配套粗体TTF，用于标题及Markdown加粗；未配置时沿用常规字体。Google Fonts的CSS链接不能直接作为字体路径，需先下载实际TTF。2026-11-12本机已从Google官方字体CSS下载Noto Sans SC 400/700，保存在已忽略的 `runtime/fonts/NotoSansSC-Regular.ttf`、`NotoSansSC-Bold.ttf`，同目录保存OFL许可证；本机 `.env` 使用绝对路径，导出时不联网。字体文件未纳入Git或Docker镜像，换机需要另行准备字体并设置文件路径。
 
 ## 本地运行与检查
 

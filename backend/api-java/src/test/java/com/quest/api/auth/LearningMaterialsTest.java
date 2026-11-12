@@ -50,6 +50,21 @@ class LearningMaterialsTest {
         return post(path).contentType("application/json").content(body).header("X-Service-Token","material-test-token").header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",sig);
     }
     JsonNode internal(String suffix,Object body)throws Exception{return json.readTree(mvc.perform(signed("/internal/materials/"+suffix,body)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");}
+    @Test void pdfDownloadChecksOwnershipReadinessAndFormatBeforeRendering()throws Exception{
+        String alice=token("alice"),bob=token("bob");
+        JsonNode material=create(source("alice"),alice,UUID.randomUUID());String id=material.path("id").asText();
+        String url="/api/v1/study/materials/"+id+"/download";
+        mvc.perform(get(url).param("format","pdf").header("Authorization","Bearer "+alice)).andExpect(status().isConflict());
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.never()).materialPdf(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any());
+        db.update("UPDATE learning_material SET status='ready',title='考纲笔记',markdown='# 考纲笔记' WHERE id=?",UUID.fromString(id));
+        byte[] pdf="%PDF-1.4 test".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        org.mockito.Mockito.when(ai.materialPdf(org.mockito.ArgumentMatchers.eq("考纲笔记"),org.mockito.ArgumentMatchers.eq("# 考纲笔记"),org.mockito.ArgumentMatchers.any())).thenReturn(pdf);
+        mvc.perform(get(url).param("format","pdf").header("Authorization","Bearer "+bob)).andExpect(status().isNotFound());
+        mvc.perform(get(url).param("format","html").header("Authorization","Bearer "+alice)).andExpect(status().isBadRequest());
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.never()).materialPdf(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any());
+        mvc.perform(get(url).param("format","pdf").header("Authorization","Bearer "+alice)).andExpect(status().isOk()).andExpect(content().contentType("application/pdf")).andExpect(header().string("Cache-Control","private, no-store")).andExpect(content().bytes(pdf));
+        org.mockito.Mockito.verify(ai,org.mockito.Mockito.times(1)).materialPdf(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any());
+    }
     @Test void mqExecutionIsIdempotentAndSourceDeletionPreservesReadyMarkdown()throws Exception{
         String alice=token("alice");UUID source=source("alice");JsonNode material=create(source,alice,UUID.randomUUID());String id=material.path("id").asText();
         var event=db.queryForMap("SELECT event_id,generation FROM learning_material WHERE id=?",UUID.fromString(id));

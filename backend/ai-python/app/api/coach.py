@@ -40,6 +40,12 @@ def _diagnose(stage: str, failure: Exception, request: Request, parser=None):
         "JSON 值未结束": "json_value_incomplete",
         "JSON 字段名必须是字符串": "json_key_not_string",
         "JSON 不允许非有限数字": "json_nonfinite_number",
+        "业务工具调用失败": "business_callback_failed",
+        "业务工具响应过长": "business_callback_too_large",
+        "业务工具返回无效权限": "business_context_invalid",
+        "陪练讲解失败": "explanation_failed",
+        "陪练讲解未完成": "explanation_incomplete",
+        "内部认证未配置": "internal_auth_missing",
     }
     reason = (
         "json_decode_error"
@@ -49,7 +55,9 @@ def _diagnose(stage: str, failure: Exception, request: Request, parser=None):
     raw = parser.raw if parser is not None else ""
     prefix = raw.lstrip()
     shape = (
-        "empty"
+        "unavailable"
+        if parser is None
+        else "empty"
         if not prefix
         else "markdown_fence"
         if prefix.startswith("```")

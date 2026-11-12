@@ -59,7 +59,12 @@ export function createMaterialsApi(auth: Pick<ReturnType<typeof useAuthStore>, '
       }),
     retry: (id: string, data: { requestId: string }) =>
       auth.request<Material>({ method: 'POST', url: `${path(id)}/retry`, data }),
-    download: (id: string) =>
-      auth.request<Blob>({ method: 'GET', url: `${path(id)}/download`, responseType: 'blob' }),
+    download: (id: string, format: 'markdown' | 'pdf' = 'markdown') =>
+      auth.request<Blob>({
+        method: 'GET',
+        url: `${path(id)}/download${format === 'pdf' ? '?format=pdf' : ''}`,
+        responseType: 'blob',
+        ...(format === 'pdf' ? { timeout: 70000 } : {}),
+      }),
   }
 }

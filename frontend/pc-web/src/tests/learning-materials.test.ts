@@ -73,7 +73,7 @@ it('顶部学习资料tab与一级route，列表使用共用资料卡', async ()
   expect(wrapper.findComponent(MaterialCard).exists()).toBe(true)
   expect(wrapper.text()).toContain('事业编 A 类 · 职测')
   expect(wrapper.text()).toContain('来源对话')
-  expect(wrapper.text()).toContain('Markdown')
+  expect(wrapper.find('.material-title .arco-tag').exists()).toBe(false)
 })
 it('ready按需预览SafeMarkdown，下载鉴权blob并释放URL', async () => {
   const blob = new Blob(['# 方法'], { type: 'text/markdown' })
@@ -105,6 +105,34 @@ it('ready按需预览SafeMarkdown，下载鉴权blob并释放URL', async () => {
   expect(create).toHaveBeenCalledWith(blob)
   expect(click).toHaveBeenCalledOnce()
   expect(revoke).toHaveBeenCalledWith('blob:material')
+})
+it('PDF下载复用鉴权并保存pdf文件', async () => {
+  const blob = new Blob(['%PDF-1.4'], { type: 'application/pdf' })
+  const create = vi.fn().mockReturnValue('blob:pdf')
+  const revoke = vi.fn()
+  vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke }))
+  let saved = ''
+  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+    this: HTMLAnchorElement,
+  ) {
+    saved = this.download
+  })
+  const { wrapper, request } = await render((c) => {
+    if (c.url?.endsWith('/download?format=pdf')) return blob
+    return { list: [material] }
+  })
+  await wrapper.get('[data-test="download-material-pdf"]').trigger('click')
+  await flushPromises()
+  expect(request).toHaveBeenCalledWith({
+    method: 'GET',
+    url: '/api/v1/study/materials/m%2F1/download?format=pdf',
+    responseType: 'blob',
+    timeout: 70000,
+  })
+  expect(saved).toMatch(/\.pdf$/)
+  expect(create).toHaveBeenCalledWith(blob)
+  expect(click).toHaveBeenCalledOnce()
+  expect(revoke).toHaveBeenCalledWith('blob:pdf')
 })
 it('下载失败沿用全局反馈且不触发保存', async () => {
   const feedback = vi.fn()

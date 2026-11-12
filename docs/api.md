@@ -55,6 +55,8 @@
 | POST | `/api/v1/study/materials/{id}/retry`    |
 | GET  | `/api/v1/study/materials/{id}/download` |
 
+下载默认返回 Markdown；`?format=pdf` 返回本地排版的 A4 PDF，均只允许本人已完成资料，使用附件响应与 `private, no-store`。PDF转换不调用模型，具体支持范围与字体配置见 [Python说明](../backend/ai-python/README.md)。
+
 ## MaterialInternalController
 
 源码：[MaterialInternalController.java](../backend/api-java/src/main/java/com/quest/api/materials/MaterialInternalController.java)
@@ -136,6 +138,7 @@
 | POST | `/internal/coach-explain` | [coach.py](../backend/ai-python/app/api/coach.py) |
 
 | POST | `/internal/material-generate` | [materials.py](../backend/ai-python/app/api/materials.py) |
+| POST | `/internal/material-pdf` | [materials.py](../backend/ai-python/app/api/materials.py) |
 
 | POST | `/internal/pdf-inspect` | [pdf_import.py](../backend/ai-python/app/api/pdf_import.py) |
 

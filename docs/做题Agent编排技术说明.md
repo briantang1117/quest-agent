@@ -106,3 +106,11 @@ Python新增`app/agent/coach_workflow.py`、`app/api/coach_workflow.py`与`app/c
 3. 开始练习并点击提交，确认对错先显示，再出现讲解；刷新仍保留作答。输入“我选A”时只应高亮候选并要求点击确认。
 4. 测试下一题、普通聊天与联网来源；取消或中断讲解后重新打开会话，检查已完成的判分仍在，半截正文没有作为成功消息保存。
 5. 停止并重启Python，检查SQLite文件保留；重复已完成的requestId应由Java读取原结果，不再次调用模型。真实断网、供应商tool calling与NAS上的现有数据仍需本机实际验收。
+
+## 资料整理请求排查
+
+`coach_workflow` 的 `50203` 也可能来自 Java 业务回调，不能直接认定模型输出为空。没有解析器的诊断现显示 `shape=unavailable`；`output_bytes=0` 不代表供应商实际返回零字节。回调非 200 时额外记录受控 step、HTTP status 和数字 code，不记录正文、凭据或 grant。例如 `step=create_material status=503 code=50341` 表示 API 学习资料开关未启用。API 的 `quest.materials.enabled` 和 Worker 的 `QUEST_MATERIAL_MQ_ENABLED` 是两个独立开关；启用前还需核验 V13 与预建 Topic，Worker 关闭不会阻止 API 创建任务，但任务不会被消费。
+
+2026-11-12：上述诊断改动通过 Python 编排与回调定向测试 25 项及 Ruff 检查，未调用真实模型或操作 MQ/数据库。
+
+资料生成曾沿用普通聊天的 1 MiB SSE 总流量预算，长正文或逐 token 事件的 JSON 包装、推理元数据可能先触发 `stream too large`。现为资料流单独配置 `MATERIAL_MAX_STREAM_BYTES=16777216`（默认 16 MiB，最大 64 MiB），由 Python `.env` 加载；普通聊天仍为 1 MiB，单行/事件仍为 64 KiB，资料最终 JSON 仍限 1 MiB、正文仍限 100000 字符。修改后重启 Python，通过页面手动重试失败任务；不会自动重新调用模型。资料、普通正文流、编排与回调定向测试共 109 项及 Ruff 检查通过，包含 SSE 超过 1 MiB 但正文合法的回归用例；真实生成待本机重试验证。

@@ -2,6 +2,9 @@
 FROM ghcr.io/astral-sh/uv:0.12.9 AS uv
 FROM python:3.12-slim
 
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=uv /uv /uvx /usr/local/bin/
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1 \

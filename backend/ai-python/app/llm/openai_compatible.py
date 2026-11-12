@@ -13,13 +13,13 @@ from app.llm.tool_stream import ToolStream
 logger = logging.getLogger(__name__)
 
 
-async def _sse_payloads(response: httpx.Response):
+async def _sse_payloads(response: httpx.Response, *, max_wire_bytes: int = 1024 * 1024):
     """按 SSE 事件读入，在线限制行、事件和总字节，避免 aiter_lines 无界积累。"""
     decoder = codecs.getincrementaldecoder("utf-8")("strict")
     pending, data, total = "", [], 0
     async for block in response.aiter_bytes():
         total += len(block)
-        if total > 1024 * 1024:
+        if total > max_wire_bytes:
             raise ValueError("stream too large")
         pending += decoder.decode(block)
         while "\n" in pending:
@@ -117,6 +117,7 @@ class OpenAICompatibleProvider:
                         json_mode=True,
                         max_tokens=self._settings.material_max_output_tokens,
                         content_limit=1024 * 1024,
+                        max_wire_bytes=self._settings.material_max_stream_bytes,
                         request_timeout=self._settings.material_llm_timeout_seconds,
                     )
                 ) as stream:
@@ -137,7 +138,14 @@ class OpenAICompatibleProvider:
         return body
 
     async def _stream_completion(
-        self, messages, *, json_mode, max_tokens, content_limit=64 * 1024, request_timeout=None
+        self,
+        messages,
+        *,
+        json_mode,
+        max_tokens,
+        content_limit=64 * 1024,
+        request_timeout=None,
+        max_wire_bytes=1024 * 1024,
     ):
         body = self._completion_body(messages, json_mode=json_mode, max_tokens=max_tokens)
         options = {} if request_timeout is None else {"timeout": request_timeout}
@@ -147,7 +155,7 @@ class OpenAICompatibleProvider:
                 "POST", f"{self._settings.llm_base_url}/chat/completions", json=body, **options
             ) as response:
                 response.raise_for_status()
-                async for payload in _sse_payloads(response):
+                async for payload in _sse_payloads(response, max_wire_bytes=max_wire_bytes):
                     if payload == "[DONE]":
                         if not stopped or not nonempty:
                             raise ValueError("incomplete completion")

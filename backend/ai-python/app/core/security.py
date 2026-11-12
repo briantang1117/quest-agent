@@ -56,7 +56,7 @@ async def authenticate(request: Request, settings: Settings, nonces: NonceStore)
         token.encode(),
         settings.internal_service_token.get_secret_value().encode(),
     )
-    if request.url.path == "/internal/material-generate":
+    if request.url.path in {"/internal/material-generate", "/internal/material-pdf"}:
         # 资料请求在签名计算前有界读取，兼容没有 Content-Length 的分块请求。
         blocks, size = [], 0
         async for block in request.stream():

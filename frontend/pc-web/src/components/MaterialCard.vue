@@ -14,7 +14,7 @@ const emit = defineEmits<{ update: [value: Material] }>()
 const api = createMaterialsApi(useAuthStore())
 const previewing = ref(false),
   previewBusy = ref(false),
-  downloading = ref(false),
+  downloading = ref<'markdown' | 'pdf' | null>(null),
   retrying = ref(false)
 const markdown = ref('')
 let alive = true
@@ -49,17 +49,17 @@ async function preview() {
     if (alive) previewBusy.value = false
   }
 }
-async function download() {
+async function download(format: 'markdown' | 'pdf' = 'markdown') {
   if (downloading.value || props.material.status !== 'ready') return
-  downloading.value = true
+  downloading.value = format
   try {
-    const blob = await api.download(props.material.id)
+    const blob = await api.download(props.material.id, format)
     if (!alive) return
     const url = URL.createObjectURL(blob)
     try {
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = `${props.material.title.replace(/[\\/:*?"<>|\p{Cc}]/gu, '_').slice(0, 100) || '学习资料'}.md`
+      anchor.download = `${props.material.title.replace(/[\\/:*?"<>|\p{Cc}]/gu, '_').slice(0, 100) || '学习资料'}.${format === 'pdf' ? 'pdf' : 'md'}`
       document.body.append(anchor)
       try {
         anchor.click()
@@ -72,7 +72,7 @@ async function download() {
   } catch (cause) {
     if (alive) notifyError(cause)
   } finally {
-    if (alive) downloading.value = false
+    if (alive) downloading.value = null
   }
 }
 async function retry() {
@@ -93,7 +93,6 @@ async function retry() {
     <header>
       <div class="material-title">
         <h2>{{ material.title }}</h2>
-        <a-tag>Markdown</a-tag>
       </div>
       <a-tag
         :color="
@@ -131,9 +130,18 @@ async function retry() {
           data-test="download-material"
           size="small"
           type="primary"
-          :loading="downloading"
-          @click="download"
+          :loading="downloading === 'markdown'"
+          :disabled="downloading === 'pdf'"
+          @click="download('markdown')"
           >下载 Markdown</a-button
+        >
+        <a-button
+          data-test="download-material-pdf"
+          size="small"
+          :loading="downloading === 'pdf'"
+          :disabled="downloading === 'markdown'"
+          @click="download('pdf')"
+          >下载 PDF</a-button
         >
       </template>
       <a-button

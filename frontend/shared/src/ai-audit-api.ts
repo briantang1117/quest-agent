@@ -28,6 +28,7 @@ export const AI_ACTIONS = [
   { value: 'ai.coach_workflow', label: '陪练工作流' },
   { value: 'ai.coach_turn', label: '陪练对话' },
   { value: 'ai.material_generate', label: '学习资料整理' },
+  { value: 'material.pdf_export', label: '学习资料 PDF 导出' },
   { value: 'ai.public_import', label: '题目解析' },
   { value: 'ai.pdf_inspect', label: 'PDF 预检' },
 ]

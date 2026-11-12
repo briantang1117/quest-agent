@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import time
 from uuid import uuid4
 
@@ -12,6 +13,7 @@ from app.core.config import Settings
 from app.core.errors import ServiceError
 
 PATH = "/internal/coach/workflow-step"
+logger = logging.getLogger(__name__)
 
 
 class CoachWorkflowClient:
@@ -49,13 +51,37 @@ class CoachWorkflowClient:
         }
         try:
             async with self.client.stream("POST", PATH, content=body, headers=headers) as response:
-                if response.status_code != 200:
-                    raise ServiceError(502, 50203, "业务工具调用失败")
                 raw = bytearray()
                 async for block in response.aiter_bytes():
                     raw.extend(block)
                     if len(raw) > 512 * 1024:
                         raise ServiceError(502, 50203, "业务工具响应过长")
+            # 仅记录受控步骤、HTTP状态和数字错误码，不输出响应正文或轮次授权。
+            if response.status_code != 200:
+                code = None
+                try:
+                    error = json.loads(raw)
+                    if isinstance(error, dict) and type(error.get("code")) is int:
+                        code = error["code"]
+                except (ValueError, RecursionError):
+                    pass
+                logger.warning(
+                    "Coach callback failed: step=%s status=%d code=%s",
+                    step
+                    if step
+                    in {
+                        "context",
+                        "submit_answer",
+                        "next_question",
+                        "suggest_answer",
+                        "clarify",
+                        "create_material",
+                    }
+                    else "unknown",
+                    response.status_code,
+                    code,
+                )
+                raise ServiceError(502, 50203, "业务工具调用失败")
             result = json.loads(raw)
             if (
                 not isinstance(result, dict)

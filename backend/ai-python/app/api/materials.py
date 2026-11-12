@@ -1,12 +1,15 @@
 """Java 冻结公开消息后经 HMAC 调用的私人学习资料边界。"""
 
+import base64
 from typing import Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 
 from app.agent.materials import generate_material
 from app.core.errors import ServiceError, envelope
+from app.rendering.material_pdf import render_material_pdf
 
 router = APIRouter()
 ChoiceKey = Literal["A", "B", "C", "D", "E", "F", "G", "H"]
@@ -14,6 +17,25 @@ ChoiceKey = Literal["A", "B", "C", "D", "E", "F", "G", "H"]
 
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class MaterialPdfRequest(Contract):
+    title: str = Field(min_length=1, max_length=300)
+    markdown: str = Field(min_length=1, max_length=100000)
+
+
+@router.post("/internal/material-pdf")
+async def material_pdf(payload: MaterialPdfRequest, request: Request):
+    if not payload.title.strip() or not payload.markdown.strip():
+        raise ServiceError(422, 42242, "PDF标题或正文为空")
+    content = await run_in_threadpool(
+        render_material_pdf,
+        payload.title,
+        payload.markdown,
+        request.app.state.settings.material_pdf_font_path,
+        request.app.state.settings.material_pdf_bold_font_path,
+    )
+    return envelope(request.state.trace_id, data={"pdf_base64": base64.b64encode(content).decode()})
 
 
 class MaterialOption(Contract):

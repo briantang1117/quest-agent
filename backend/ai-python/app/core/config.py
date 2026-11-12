@@ -47,7 +47,11 @@ class Settings(BaseSettings):
     material_max_input_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
     material_max_output_chars: int = Field(default=100_000, gt=0, le=100_000)
     material_max_output_tokens: int = Field(default=32768, ge=1, le=32768)
+    # SSE包装和推理元数据计入流量，独立于最终正文预算。
+    material_max_stream_bytes: int = Field(default=16 * 1024 * 1024, gt=0, le=64 * 1024 * 1024)
     material_llm_timeout_seconds: float = Field(default=600, gt=0, le=600)
+    material_pdf_font_path: str = ""
+    material_pdf_bold_font_path: str = ""
 
     @model_validator(mode="before")
     @classmethod

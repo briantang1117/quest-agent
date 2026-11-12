@@ -9,6 +9,7 @@ it('本人资料API固定路径、编码、请求体与鉴权blob下载', async 
   await api.get('material/1')
   await api.retry('material/1', { requestId: 'retry-1' })
   await api.download('material/1')
+  await api.download('material/1', 'pdf')
   expect(request.mock.calls.map(([config]) => config)).toEqual([
     {
       method: 'POST',
@@ -23,5 +24,11 @@ it('本人资料API固定路径、编码、请求体与鉴权blob下载', async 
       data: { requestId: 'retry-1' },
     },
     { method: 'GET', url: '/api/v1/study/materials/material%2F1/download', responseType: 'blob' },
+    {
+      method: 'GET',
+      url: '/api/v1/study/materials/material%2F1/download?format=pdf',
+      responseType: 'blob',
+      timeout: 70000,
+    },
   ])
 })

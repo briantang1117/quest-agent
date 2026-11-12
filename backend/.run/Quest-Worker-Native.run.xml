@@ -3,7 +3,7 @@
     <option name="MAIN_CLASS_NAME" value="com.quest.worker.WorkerApplication" />
     <module name="worker-java" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
-    <option name="PROGRAM_PARAMETERS" value="--spring.profiles.active=deployment" />
+    <option name="PROGRAM_PARAMETERS" value="" />
     <method v="2"><option name="Make" enabled="true" /></method>
   </configuration>
 </component>
