@@ -69,11 +69,18 @@ public class PublicAiClient {
         control.onToolStatus(onStatus);return coachExplain(payload,caller,onDelta,control);
     }
     public JsonNode coachExplain(Object payload,Caller caller,java.util.function.Consumer<String> onDelta,com.quest.api.coach.CoachStreamControl control){
-        long started=System.nanoTime();String path="/internal/coach-explain";
+        return coachStream("/internal/coach-explain",payload,caller,onDelta,control,false);
+    }
+    public JsonNode coachWorkflow(Object payload,Caller caller,java.util.function.Consumer<String> onDelta,com.quest.api.coach.CoachStreamControl control){
+        return coachStream("/internal/coach-workflow",payload,caller,onDelta,control,true);
+    }
+    private JsonNode coachStream(String path,Object payload,Caller caller,java.util.function.Consumer<String> onDelta,com.quest.api.coach.CoachStreamControl control,boolean workflow){
+        long started=System.nanoTime();
+        int timeout=workflow?135:95;String kind="";boolean workflowResult=false;
         StringBuilder text=new StringBuilder();JsonNode suggestions=json.createObjectNode().set("items",json.createArrayNode());
         JsonNode sources=json.createArrayNode();
         Throwable auditFailure=null;
-        var deadline=DEADLINES.schedule(control::close,95,java.util.concurrent.TimeUnit.SECONDS);
+        var deadline=DEADLINES.schedule(control::close,timeout,java.util.concurrent.TimeUnit.SECONDS);
         try{
             control.check();
             if(token.isBlank()||secret.length()<32)throw new UserFailure(503,50321,"内部AI服务未配置");
@@ -83,7 +90,7 @@ public class PublicAiClient {
             String stamp=Long.toString(Instant.now().getEpochSecond()),nonce=UUID.randomUUID().toString();
             String message=String.join("\n",stamp,nonce,"POST",path,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)));
             Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8),"HmacSHA256"));
-            var request=HttpRequest.newBuilder(root.resolve(path)).timeout(Duration.ofSeconds(95)).header("Content-Type","application/json")
+            var request=HttpRequest.newBuilder(root.resolve(path)).timeout(Duration.ofSeconds(timeout)).header("Content-Type","application/json")
                 .header("X-Service-Token",token).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
             var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
@@ -121,6 +128,13 @@ public class PublicAiClient {
                             var summary=json.createObjectNode().put("parameter_hash",parsed.path("parameter_hash").asText()).put("result_count",parsed.path("result_count").asInt()).put("failure",parsed.path("failure").asText());
                             audit.record(caller==null?null:caller.actor(),parsed.path("tool").asText().equals("get_current_time")?"ai.tool_time":parsed.path("tool").asText().equals("search_web")?"ai.tool_search":"ai.tool_fetch",null,caller==null?null:caller.traceId(),summary,summary,
                                 parsed.path("failure").asText().equals("ok")?null:new UserFailure(503,50203,"工具调用失败"),parsed.path("duration_ms").asLong(),1,null);
+                        }else if(workflow&&event.equals("workflow_state")){
+                            if(!json.readTree(data.toString()).isObject())throw new UserFailure(503,50204,"编排状态格式错误");
+                            control.workflowState();
+                        }else if(workflow&&event.equals("workflow_result")){
+                            String nextKind=json.readTree(data.toString()).path("kind").asText();
+                            if(workflowResult||!Set.of("state_only","explain").contains(nextKind))throw new UserFailure(503,50204,"编排终态格式错误");
+                            workflowResult=true;kind=nextKind;
                         }else if(event.equals("sources")){
                             sources=com.quest.api.coach.CoachSources.validate(json.readTree(data.toString()).path("items"),json);
                         }else if(!event.isEmpty())throw new UserFailure(503,50204,"未知AI事件");
@@ -130,8 +144,8 @@ public class PublicAiClient {
                     else if(value.startsWith("data:")){if(!data.isEmpty())data.append('\n');data.append(value.substring(5).stripLeading());if(data.length()>32768)throw new UserFailure(503,50204,"AI事件超出上限");}
                     else if(!value.startsWith(":"))throw new UserFailure(503,50204,"AI服务流格式错误");
                 }
-                if(!done||text.toString().isBlank())throw new UserFailure(503,50204,"AI回答未完整返回");
-                control.check();((tools.jackson.databind.node.ObjectNode)suggestions).set("sources",sources);return suggestions;
+                if(!done||workflow&&(!workflowResult||kind.equals("state_only")&&!text.isEmpty())||text.toString().isBlank()&&(!workflow||!kind.equals("state_only")))throw new UserFailure(503,50204,"AI回答未完整返回");
+                control.check();((tools.jackson.databind.node.ObjectNode)suggestions).set("sources",sources);if(workflow)((tools.jackson.databind.node.ObjectNode)suggestions).put("kind",kind);return suggestions;
             }finally{control.detach();}
         }catch(InterruptedException failure){auditFailure=failure;Thread.currentThread().interrupt();throw new UserFailure(503,50332,"本次生成已中断，未自动重试");}
         catch(RuntimeException failure){auditFailure=failure;throw failure;}
@@ -140,7 +154,9 @@ public class PublicAiClient {
             deadline.cancel(false);
             // 中断标记不应阻止审计使用 JDBC；写完恢复，供上层取消流程识别。
             boolean interrupted=Thread.interrupted();
-            try{audit.record(caller==null?null:caller.actor(),"ai.coach_explain",null,caller==null?null:caller.traceId(),payload,json.createObjectNode().put("reply",text.toString()).set("suggestions",suggestions.path("items")),auditFailure,elapsed(started),1,null);}
+            try{
+                JsonNode auditInput=json.valueToTree(payload);if(workflow&&auditInput.isObject())((tools.jackson.databind.node.ObjectNode)auditInput).remove("grant");
+                audit.record(caller==null?null:caller.actor(),workflow?"ai.coach_workflow":"ai.coach_explain",null,caller==null?null:caller.traceId(),auditInput,json.createObjectNode().put("reply",text.toString()).set("suggestions",suggestions.path("items")),auditFailure,elapsed(started),1,null);}
             finally{if(interrupted)Thread.currentThread().interrupt();}
         }
     }

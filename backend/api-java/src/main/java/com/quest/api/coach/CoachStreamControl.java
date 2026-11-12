@@ -12,6 +12,10 @@ public final class CoachStreamControl implements AutoCloseable {
     public void onToolStatus(java.util.function.Consumer<tools.jackson.databind.JsonNode> listener){toolStatus=listener;}
     public void toolStatus(tools.jackson.databind.JsonNode status){check();toolStatus.accept(status);}
 
+    private Runnable workflowState=()->{};
+    public void onWorkflowState(Runnable listener){workflowState=listener;}
+    public void workflowState(){check();workflowState.run();}
+
     public synchronized void attachThread(){check();worker=Thread.currentThread();}
     public synchronized void detachThread(){if(worker==Thread.currentThread())worker=null;}
     public synchronized void attach(Closeable stream){

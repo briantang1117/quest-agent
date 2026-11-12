@@ -6,7 +6,7 @@
 
 ## 服务职责与接口
 
-入口为 `app/main.py:create_app`。服务接受 Java 签名的内部请求，返回题目草稿、意图、讲解、考纲结果或资料内容；不连接业务数据库，不承担用户鉴权、选题、判分、发布或资料持久化。`scope` 是受信 Java 提供的上下文，不能作为浏览器自报权限的公开接口。
+入口为 `app/main.py:create_app`。服务接受 Java 签名的内部请求，返回题目草稿、意图、讲解、考纲结果或资料内容；不连接业务数据库；通过受限工具请求Java执行选题、判分与资料创建，用户鉴权、权威答案、发布和业务持久化仍由Java负责。`scope` 是受信 Java 提供的上下文，不能作为浏览器自报权限的公开接口。
 
 | 路由                               | 实装行为与权限                                                               |
 | ---------------------------------- | ---------------------------------------------------------------------------- |
@@ -16,6 +16,7 @@
 | `POST /internal/pdf-inspect`       | 管理员本地 PDF 预检与候选切分，不调用模型、OCR 或网络                        |
 | `POST /internal/coach-turn`        | 普通用户陪练意图与回复，使用编译后的 LangGraph                               |
 | `POST /internal/coach-route`       | 普通用户短 JSON 意图识别，不执行选题、判分或资料任务                         |
+| `POST /internal/coach-workflow`    | 普通用户练习轮次LangGraph编排，固定提交判题与动态讲解；受限回调Java业务工具 |
 | `POST /internal/coach-explain`     | 普通用户讲解 SSE，可使用只读搜索与网页抓取工具                               |
 | `POST /internal/syllabus-inspect`  | 管理员考纲 PDF 离线预检                                                      |
 | `POST /internal/syllabus-review`   | 管理员考纲 AI 整理，不启用、不发布                                           |
@@ -28,9 +29,9 @@ nonce 仅在进程内存保存，当前 Docker 启动单 worker；扩为多 work
 
 ## 工作流与工具边界
 
-`app/agent/extraction_graph.py`、`candidate_graph.py`、`coach_graph.py` 使用真实 LangGraph `StateGraph`。其中抽取图包含准备、生成、校验及修复分支；候选图执行来源检查、抽取与原答案协调。考纲整理、资料整理与讲解工具循环不能统称为 LangGraph Agent。
+`app/agent/extraction_graph.py`、`candidate_graph.py`、`coach_graph.py` 使用真实 LangGraph `StateGraph`。其中抽取图包含准备、生成、校验及修复分支；候选图执行来源检查、抽取与原答案协调。新公开陪练流默认使用 `coach_workflow.py`：准备权威上下文→固定提交/下一题或短意图识别→Java受控业务工具→讲解→终态。明确提交不经过意图模型，文本作答只产生候选确认，讲解沿用现有工具循环。考纲整理、资料整理与内层讲解工具循环本身仍是普通异步流程。
 
-`app/agent/coach_tools.py` 是普通异步有界循环。`COACH_TOOLS_ENABLED` 默认 `true`，还需要文本供应商支持 `stream_chat` 且至少配置一种工具；存在未作答题卡时禁止搜索与抓取。未进入工具循环时，非未作答场景仍可能通过 `coach_search.retrieve` 执行关键词检索，因此关闭此开关不等于禁用全部联网。
+`app/agent/coach_tools.py` 是普通异步有界循环。`COACH_TOOLS_ENABLED` 默认 `true`，还需要文本供应商支持 `stream_chat` ；本地时间工具无需供应商配置，存在未作答题卡时禁止搜索与抓取。未进入工具循环时，非未作答场景仍可能通过 `coach_search.retrieve` 执行关键词检索，因此关闭此开关不等于禁用全部联网。
 
 本地时间、`search_web` 与 `fetch_page` 共用单轮预算：默认最多 12 次工具调用、6 轮工具来回、24 KiB 累计观察数据、128 KiB 序列化历史、90 秒总时限，常规最多 7 次模型调用，最后一轮强制禁用工具；单工具执行限 8 秒。重复参数使用请求内缓存，但仍计调用与观察预算。`recency` 契约包含 `year`，执行器当前仅支持 `any`，其他值返回工具错误。明确工具协议错误或不支持时允许一次无工具降级；网络、鉴权和限流错误不触发该重试。
 
@@ -55,7 +56,7 @@ SSE 包含 `delta`、工具状态/审计、来源、建议及 `done` 或 `error`
 
 ## 本地运行与检查
 
-要求 Python >=3.11；Docker 使用 Python 3.12。依赖范围以 `pyproject.toml` 为准，安装使用 `uv.lock`：FastAPI、Starlette、HTTPX、Pydantic Settings、Uvicorn、LangGraph、pypdf；开发工具为 pytest、Ruff。
+要求 Python >=3.11；Docker 使用 Python 3.12。依赖范围以 `pyproject.toml` 为准，安装使用 `uv.lock`：FastAPI、Starlette、HTTPX、Pydantic Settings、Uvicorn、LangGraph、官方 `langgraph-checkpoint-sqlite`、pypdf；开发工具为 pytest、Ruff。
 
 ```bash
 cd backend/ai-python
@@ -72,11 +73,21 @@ uv run pytest
 uv run ruff check .
 ```
 
-测试位于 `tests/`，覆盖内部安全、契约、图、PDF 子进程、考纲、资料、供应商替身与工具流。主线最近记录 Python 665 项通过；该记录不等同本轮重新执行或真实供应商验收。`tests/local_*` 是显式本地辅助入口，运行前检查其配置和副作用，不能视为默认离线验收步骤。
+测试位于 `tests/`，覆盖内部安全、契约、图、PDF 子进程、考纲、资料、供应商替身与工具流。本轮离线回归 Python 721 项通过，Ruff通过；该记录不等同真实供应商验收。`tests/local_*` 是显式本地辅助入口，运行前检查其配置和副作用，不能视为默认离线验收步骤。
 
 ### 本地时间工具
 
 Tool Use启用时始终提供get_current_time，无需网页服务配置。实现为app/agent/local_time.py，使用datetime、zoneinfo和Pydantic，默认Asia/Shanghai。它返回服务器当前时间/自然年份，供模型解释“今年、明年”等相对时间；不修改搜索词，不把考纲年度当当前年，不产生外部网页来源。Java审计ai.tool_time，PC显示“正在确认日期…”。时间工具同样受单轮预算与去重约束，未作答题原有工具禁用边界保持。详细契约见[工具技术说明](../../docs/陪练工具技术说明.md)。
 
 
-工具预算可通过本工程环境变量配置：`COACH_MAX_TOOL_CALLS=12`（1–32）和`COACH_MAX_TOOL_ROUNDS=6`（1–12）。总时限仍为Python90秒/Java讲解95秒，观察仍为24KiB。达到轮次/次数或新批次超过剩余次数时，用已有结果强制直接回答，不把正常预算收敛变成50203；强制回答阶段仍请求工具则拒绝。Java内部传输最多接受32条工具审计与96个网页来源（来源元数据32KiB），与Python可配置上限兼容。修改环境后需重启Python；本次Java传输上限也有变更，需要Java加载新代码。
+工具预算可通过本工程环境变量配置：`COACH_MAX_TOOL_CALLS=12`（1–32）和`COACH_MAX_TOOL_ROUNDS=6`（1–12）。讲解工具阶段仍为90秒，观察仍为24KiB；外层新图130秒、Java工作流135秒，旧Java讲解路径95秒。达到轮次/次数或新批次超过剩余次数时，用已有结果强制直接回答，不把正常预算收敛变成50203；强制回答阶段仍请求工具则拒绝。Java内部传输最多接受32条工具审计与96个网页来源（来源元数据32KiB），与Python可配置上限兼容。修改环境后需重启Python；本次Java传输上限也有变更，需要Java加载新代码。
+
+## 本地编排检查点与Java回调
+
+`COACH_API_URL` 默认 `http://127.0.0.1:8080`，仅供本机开发；容器中应显式配置容器可达的Java API地址。客户端只调用 `/internal/coach/workflow-step`，沿用内部token/HMAC，不跟随HTTP重定向、不自动重试。每次请求还携带Java签发的短期轮次授权；它不进入模型提示词或检查点，Java检查原登录、所有者、轮次与明确提交的选项。
+
+`COACH_CHECKPOINT_PATH` 默认 `runtime/coach-checkpoints.sqlite`，相对于Python工作目录。生命周期由FastAPI管理官方 `AsyncSqliteSaver`，新目录0700、数据库0600，退出关闭连接；Docker镜像预建ai用户可写的 `/app/runtime`。此目录被Git和Docker构建上下文忽略。若希望容器重建后保留图进度，应将该目录挂载到受保护的持久卷。测试默认使用内存检查点，落盘测试使用临时目录并验证重开和授权不落盘。
+
+图按 `<sessionId>:<requestId>` 保存每轮进度，不是另一份权威题库/学习数据库。重复或中断的同轮请求拒绝重新执行，Java负责重放已经保存的业务响应；不会自动恢复付费模型调用。检查点保留上下文与已判分结果，当前没有自动清理策略，需要本机按需清理；停止Python后删除该SQLite文件会清除图历史，Java业务记录独立保留。
+
+新内部SSE增加 `workflow_state`（只通知Java重读权威状态）和 `workflow_result`（`state_only`或`explain`），成功末尾仍为 `done`；`state_only`允许没有模型正文。整轮Python上限130秒，内层讲解工具预算仍为90秒。Java公开流默认开启新编排，可用 `quest.coach.harness.enabled=false` 显式回滚旧路径。两端代码需要一起加载，原有前端协议无需更改。

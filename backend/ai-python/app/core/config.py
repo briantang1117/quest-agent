@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     background_llm_timeout_seconds: float = Field(default=180, gt=0, le=600)
     llm_temperature: float = Field(default=0, ge=0, le=2)
     llm_max_tokens: int = Field(default=4096, ge=1, le=32768)
+    coach_api_url: str = "http://127.0.0.1:8080"
+    coach_checkpoint_path: str = "runtime/coach-checkpoints.sqlite"
     coach_tools_enabled: bool = True
     coach_max_tool_calls: int = Field(default=12, ge=1, le=32)
     coach_max_tool_rounds: int = Field(default=6, ge=1, le=12)
@@ -105,6 +107,7 @@ class Settings(BaseSettings):
         "embedding_base_url",
         "search_api_base_url",
         "fetch_api_base_url",
+        "coach_api_url",
     )
     @classmethod
     def validate_base_url(cls, value: str | None) -> str | None:

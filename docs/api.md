@@ -65,6 +65,10 @@
 | POST | `/internal/materials/outbox/ack`   |
 | POST | `/internal/materials/execute`      |
 
+## CoachWorkflowInternalController
+
+`POST /internal/coach/workflow-step`为Python图的受限Java业务工具入口。需要内部HMAC及Java签发的短期轮次授权，不能作为浏览器接口。步骤、输入和幂等约束详见[编排技术说明](做题Agent编排技术说明.md)。
+
 ## PublicBankController
 
 源码：[PublicBankController.java](../backend/api-java/src/main/java/com/quest/api/publicbank/PublicBankController.java)
@@ -123,6 +127,8 @@
 | 方法 | 路径 | 定义 |
 | ---- | ---- | ---- |
 
+| POST | `/internal/coach-workflow` | Python LangGraph练习流程，协议见[编排技术说明](做题Agent编排技术说明.md) |
+
 | POST | `/internal/coach-turn` | [coach.py](../backend/ai-python/app/api/coach.py) |
 
 | POST | `/internal/coach-route` | [coach.py](../backend/ai-python/app/api/coach.py) |
@@ -145,4 +151,4 @@
 
 ## 流式与身份
 
-Java公开Coach SSE事件为state/delta/tool_status/reset/done及error；Python内部还有sources/suggestions/tool_audit，Java校验后保存或审计，不能原样透传网页全文。业务会话/资料所有者从Java已鉴权身份取得，不接受自由用户ID绕过。Java仅三个精确资料内部POST使用HMAC，其余internal默认拒绝。
+Java公开Coach SSE事件为state/delta/tool_status/reset/done及error；Python内部还有sources/suggestions/tool_audit，Java校验后保存或审计，不能原样透传网页全文。业务会话/资料所有者从Java已鉴权身份取得，不接受自由用户ID绕过。Java仅三个精确资料POST及陪练`workflow-step`使用对应HMAC过滤器，其余internal默认拒绝。Python新图另发内部`workflow_state`与`workflow_result`，Java读取权威状态并消费终态，不将这两个事件原样传给浏览器。

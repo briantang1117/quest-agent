@@ -16,5 +16,6 @@ public class CoachAiClient {
     public JsonNode explain(Object payload,String userId,String traceId,Consumer<String> onDelta,CoachStreamControl control){
         return client.coachExplain(payload,caller(userId,traceId),onDelta,control);
     }
+    public JsonNode workflow(Object payload,String userId,String traceId,Consumer<String> onDelta,CoachStreamControl control){return client.coachWorkflow(payload,caller(userId,traceId),onDelta,control);}
     private PublicAiClient.Caller caller(String userId,String traceId){return new PublicAiClient.Caller(Long.valueOf(userId),traceId);}
 }

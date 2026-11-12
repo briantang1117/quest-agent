@@ -34,11 +34,13 @@ public class StudentCoachService {
     private final ObjectMapper json;
     private final CoachAiClient ai;
     private final String mode;
+    private final CoachWorkflowGrant workflowGrants;
+    @Value("${quest.coach.harness.enabled:true}") private boolean harnessEnabled=true;
     private final com.quest.api.syllabus.SyllabusService syllabi;
     private final com.quest.api.materials.LearningMaterialService materials;
     private record ActiveStream(UUID sessionId,long userId,UUID requestId,CoachStreamControl control) {}
     private final Set<ActiveStream> activeStreams=java.util.concurrent.ConcurrentHashMap.newKeySet();
-    public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode,com.quest.api.syllabus.SyllabusService syllabi,com.quest.api.materials.LearningMaterialService materials){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;this.syllabi=syllabi;this.materials=materials;}
+    public StudentCoachService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,CoachAiClient ai,@Value("${quest.persistence.mode:disabled}") String mode,com.quest.api.syllabus.SyllabusService syllabi,com.quest.api.materials.LearningMaterialService materials,CoachWorkflowGrant workflowGrants){this.workflowGrants=workflowGrants;this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.ai=ai;this.mode=mode;this.syllabi=syllabi;this.materials=materials;}
     private JdbcTemplate db(){if(!mode.equals("postgresql")||jdbc.getIfAvailable()==null)throw unavailable();return jdbc.getObject();}
     private <T> T tx(SessionIdentity who,Supplier<T> work){
         db();var manager=managers.getIfAvailable();if(manager==null)throw unavailable();
@@ -219,11 +221,130 @@ public class StudentCoachService {
         try{
             control.attachThread();
             active=registerStream(who,pending,control);
-            return generateStreamTurn(who,pending,traceId,emit,control);
+            return harnessEnabled?generateWorkflowTurn(who,pending,traceId,emit,control):generateStreamTurn(who,pending,traceId,emit,control);
         }finally{
             if(active!=null)activeStreams.remove(active);
             control.detachThread();
         }
+    }
+    public record WorkflowStep(String grant,String step,List<String> keys,String reply,JsonNode suggestions) {}
+    /** 回调每次重查登录、所有者、认领和原请求摘要；事务内只处理业务，不调用模型。 */
+    public Map<String,Object> workflowStep(WorkflowStep input){
+        if(input==null||input.step()==null||!Set.of("context","submit_answer","next_question","suggest_answer","clarify","create_material").contains(input.step())||input.keys()!=null&&input.keys().size()>8||input.reply()!=null&&input.reply().length()>200||input.suggestions()!=null&&(!input.suggestions().isArray()||input.suggestions().size()>4))throw new IllegalArgumentException();
+        var grant=workflowGrants.verify(input.grant());
+        SessionIdentity who=users.session(grant.userId(),grant.loginSession());
+        Session committed=tx(who,()->{
+            Session live=require(grant.sessionId(),Long.parseLong(grant.userId()),true);
+            if(!grant.requestId().equals(live.processing()))throw conflict();
+            var rows=db().queryForList("SELECT request_hash,status FROM student_coach_turn WHERE session_id=? AND request_id=?",live.id(),grant.requestId());
+            if(rows.size()!=1||!grant.hash().equals(rows.getFirst().get("request_hash"))||!"processing".equals(rows.getFirst().get("status")))throw conflict();
+            ActiveStream active=activeStreams.stream().filter(a->a.sessionId().equals(live.id())&&a.userId()==live.userId()&&a.requestId().equals(grant.requestId())).findFirst().orElseThrow(this::conflict);
+            active.control().check();
+            ObjectNode state=live.state();JsonNode workflow=state.path("_workflow");
+            if(!workflow.path("requestId").asText().equals(grant.requestId().toString()))throw conflict();
+            String step=input.step(),applied=workflow.path("step").asText("");
+            if(!step.equals("context")){
+                if(!applied.isEmpty()&&!applied.equals(step))throw conflict();
+                if(applied.isEmpty()){
+                    switch(step){
+                        case "submit_answer"->{
+                            if(!grant.action().equals("answer"))throw UserFailure.denied();
+                            grade(state,new Turn(grant.requestId(),"answer",null,grant.questionId(),grant.keys()));
+                        }
+                        case "next_question"->{
+                            if(!Set.of("next","chat").contains(grant.action()))throw UserFailure.denied();
+                            nextQuestion(live);
+                        }
+                        case "suggest_answer"->{
+                            if(!grant.action().equals("chat")||!state.hasNonNull("current")||state.hasNonNull("result"))throw conflict();
+                            List<String> keys=input.keys()==null?List.of():input.keys();validateSelection(state.path("current").path("snapshot"),keys);
+                            state.set("suggestedKeys",json.valueToTree(keys));
+                            message(state,"assistant","你是要提交 "+String.join("、",keys)+" 吗？请在题目卡片确认选项后提交。");
+                        }
+                        case "clarify"->{
+                            if(!grant.action().equals("chat")||input.reply()==null||input.reply().isBlank())throw new IllegalArgumentException();
+                            suggestions(message(state,"assistant",input.reply()),input.suggestions(),false,canAdvance(live));
+                        }
+                        case "create_material"->{
+                            if(!grant.action().equals("chat"))throw UserFailure.denied();
+                            String text=workflow.path("message").asText();var messages=state.withArray("messages");
+                            materials.create(who,live.id().toString(),new com.quest.api.materials.LearningMaterialService.Create(grant.requestId(),text),messages.get(messages.size()-1).path("id").asText());
+                            message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true);
+                        }
+                        default->throw new IllegalArgumentException();
+                    }
+                    ((ObjectNode)workflow).put("step",step);
+                    active.control().check();
+                    db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),live.id(),live.userId());
+                }
+            }
+            return live;
+        });
+        // 考纲向量检索可能调用Python；提交事务并释放行锁后才能构造AI上下文。
+        return Map.of("context",context(committed,workflowMessage(committed,grant.action()),input.step().equals("submit_answer")||input.step().equals("context")&&grant.action().equals("chat")));
+    }
+    private String workflowMessage(Session s,String action){
+        if(action.equals("answer")&&s.state().hasNonNull("result"))return "请基于权威判分讲解这道题，说明思路与容易混淆之处。";
+        return s.state().path("_workflow").path("message").asText("继续学习");
+    }
+    private Session workflowLive(SessionIdentity who,Session s,Turn input){return tx(who,()->{
+        Session live=require(s.id(),s.userId(),false);if(!input.requestId().equals(live.processing()))throw conflict();return live;
+    });}
+    private JsonNode generateWorkflowTurn(SessionIdentity who,Pending pending,String traceId,java.util.function.BiConsumer<String,JsonNode> emit,CoachStreamControl control){
+        Session original=pending.session();Turn input=pending.request();boolean saved=false;
+        try{
+            control.check();String text=input.action().equals("answer")?"我的答案："+String.join("、",input.keys()==null?List.of():input.keys()):input.action().equals("next")?"下一题":input.text().strip();
+            // 非法明确提交在模型调用前拒绝，判分仍留给固定图节点。
+            if(input.action().equals("answer")){
+                JsonNode current=original.state().path("current");
+                if(!current.path("id").asText().equals(input.questionId())||original.state().hasNonNull("result"))throw conflict();
+                validateSelection(current.path("snapshot"),input.keys()==null?List.of():input.keys());
+            }
+            message(original.state(),"user",text);
+            original.state().set("_workflow",json.createObjectNode().put("requestId",input.requestId().toString()).put("message",text));
+            checkpoint(who,original,input);saved=true;
+            ObjectNode initial=(ObjectNode)view(original);initial.put("processing",true);emit.accept("state",initial);
+            String grant=workflowGrants.issue(new CoachWorkflowGrant.Claims(who.user().id(),who.sessionId(),original.id(),input.requestId(),requestFingerprint(input),input.action(),input.questionId(),input.keys()==null?List.of():input.keys(),java.time.Instant.now().getEpochSecond()+180));
+            Map<String,Object> payload=Map.of("scope","student","workflow_id",original.id()+":"+input.requestId(),"action",input.action(),"grant",grant,"context",context(original,text,false));
+            StringBuilder reply=new StringBuilder();control.onToolStatus(status->emit.accept("tool_status",status));
+            control.onWorkflowState(()->emit.accept("state",view(workflowLive(who,original,input))));
+            JsonNode meta=ai.workflow(payload,who.user().id(),traceId,chunk->{control.check();if(reply.length()+chunk.length()>MAX_REPLY_CHARS)throw unavailable();reply.append(chunk);emit.accept("delta",json.createObjectNode().put("text",chunk));},control);
+            control.check();return finishWorkflow(who,original,input,meta,reply.toString(),false);
+        }catch(RuntimeException failure){
+            org.slf4j.LoggerFactory.getLogger(StudentCoachService.class).warn("Coach workflow failed: trace={} code={} type={}",traceId,failure instanceof UserFailure uf?uf.code():0,failure.getClass().getName());
+            boolean interrupted=Thread.interrupted();
+            try{
+                if(!saved){releaseClaim(original,input);throw failure;}
+                JsonNode response=finishWorkflow(who,original,input,null,"",true);
+                try{emit.accept("reset",json.createObjectNode());}catch(RuntimeException ignored){/* 对端已关闭 */}return response;
+            }catch(RuntimeException cleanup){try{releaseClaim(original,input);}catch(RuntimeException ignored){/* 租约回收兜底 */}throw cleanup;}
+            finally{if(interrupted)Thread.currentThread().interrupt();}
+        }
+    }
+    /** 终结与回调共用同一行锁，拿锁后重新读取，不能用此前MVCC快照覆盖正在提交的工具结果。 */
+    private JsonNode finishWorkflow(SessionIdentity who,Session original,Turn input,JsonNode meta,String reply,boolean failed){
+        return tx(who,()->{
+            Session live=require(original.id(),original.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
+            ObjectNode state=live.state();boolean graded=input.action().equals("answer")&&state.hasNonNull("result");
+            String step=state.path("_workflow").path("step").asText();
+            if(failed){
+                if(graded||step.isEmpty()){
+                    var assistant=message(state,"assistant",graded?"AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。":"本次回答未完成，未自动重试。你可以重新发送问题。");
+                    suggestions(assistant,null,graded,canAdvance(live));
+                }
+            }else{
+                String kind=meta.path("kind").asText();
+                if(kind.equals("explain")){
+                    if(reply.isBlank()||input.action().equals("answer")&&!graded)throw unavailable();
+                    var assistant=message(state,"assistant",reply);suggestions(assistant,meta.path("items"),graded,canAdvance(live));
+                    if(meta.path("sources").isArray()&&!meta.path("sources").isEmpty())assistant.set("sources",CoachSources.validate(meta.path("sources"),json));
+                }else if(!kind.equals("state_only")||!reply.isEmpty()||step.isBlank()||input.action().equals("answer"))throw unavailable();
+            }
+            JsonNode response=view(new Session(live.id(),live.userId(),live.subject(),live.title(),state,null));
+            db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),live.id(),live.userId());
+            db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),live.id(),input.requestId());
+            return response;
+        });
     }
     private JsonNode generateStreamTurn(SessionIdentity who,Pending pending,String traceId,
                                         java.util.function.BiConsumer<String,JsonNode> emit,CoachStreamControl control){
@@ -417,7 +538,8 @@ public class StudentCoachService {
         if(list.isEmpty()&&afterGrading&&hasNextQuestion){ObjectNode entry=list.addObject();entry.put("action","next");entry.put("label","继续下一题");}
         if(!list.isEmpty())message.set("suggestions",list);
     }
-    private Map<String,Object> context(Session s,String text){
+    private Map<String,Object> context(Session s,String text){return context(s,text,true);}
+    private Map<String,Object> context(Session s,String text,boolean includeSyllabus){
         Map<String,Object> payload=new LinkedHashMap<>();payload.put("scope","student");payload.put("subject",s.subject());payload.put("message",text);
         List<Map<String,String>> history=new ArrayList<>();JsonNode messages=s.state().path("messages");for(int i=Math.max(0,messages.size()-10);i<messages.size();i++){var msg=messages.get(i);history.add(Map.of("role",msg.path("role").asText(),"text",msg.path("text").asText().substring(0,Math.min(6000,msg.path("text").asText().length()))));}payload.put("history",history);
         if(s.state().hasNonNull("current")){
@@ -426,7 +548,7 @@ public class StudentCoachService {
         if(s.state().hasNonNull("result")){
             JsonNode result=s.state().get("result");payload.put("result",Map.of("correct",result.path("correct").asBoolean(),"selected_keys",result.path("selectedKeys"),"answer_keys",result.path("answerKeys"),"explanation_md",result.path("explanationMd").asText()));
         }
-        if(s.state().hasNonNull("syllabusVersionId")&&s.state().hasNonNull("examYear")){
+        if(includeSyllabus&&s.state().hasNonNull("syllabusVersionId")&&s.state().hasNonNull("examYear")){
             // 只从本会话固定版本按章节检索，明确是局部依据，不静默切换到新考纲。
             payload.put("syllabus",syllabi.context(s.state().path("syllabusVersionId").asText(),s.subject(),s.state().path("examYear").asInt(),text));
         }

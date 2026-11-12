@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"spring.config.import=","spring.datasource.url=jdbc:h2:mem:materials;MODE=PostgreSQL;DB_CLOSE_DELAY=-1","spring.datasource.username=sa","spring.datasource.password=","spring.flyway.enabled=false","spring.autoconfigure.exclude=com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration","quest.persistence.mode=postgresql","quest.materials.enabled=true","INTERNAL_SERVICE_TOKEN=material-test-token","INTERNAL_HMAC_SECRET=material-test-hmac-secret-at-least-32-bytes","quest.security.jwt.secret=materials-test-secret-at-least-32-bytes","quest.security.login.account-limit=100","quest.security.login.source-limit=1000"})
+@SpringBootTest(properties={"spring.config.import=","spring.datasource.url=jdbc:h2:mem:materials;MODE=PostgreSQL;DB_CLOSE_DELAY=-1","spring.datasource.username=sa","spring.datasource.password=","spring.flyway.enabled=false","spring.autoconfigure.exclude=com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration","quest.persistence.mode=postgresql","quest.coach.harness.enabled=false","quest.materials.enabled=true","INTERNAL_SERVICE_TOKEN=material-test-token","INTERNAL_HMAC_SECRET=material-test-hmac-secret-at-least-32-bytes","quest.security.jwt.secret=materials-test-secret-at-least-32-bytes","quest.security.login.account-limit=100","quest.security.login.source-limit=1000"})
 @ActiveProfiles("test") @AutoConfigureMockMvc
 class LearningMaterialsTest {
     @Autowired MockMvc mvc; @Autowired JdbcTemplate db; @Autowired ObjectMapper json;

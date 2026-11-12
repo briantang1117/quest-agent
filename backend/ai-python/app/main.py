@@ -1,19 +1,26 @@
-from contextlib import asynccontextmanager
+import asyncio
+import os
+from contextlib import AsyncExitStack, asynccontextmanager
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from starlette.exceptions import HTTPException
 
 from app.agent.candidate_graph import build_candidate_graph
 from app.agent.coach_graph import build_coach_graph
+from app.agent.coach_workflow import build_coach_workflow
 from app.agent.extraction_graph import build_extraction_graph
 from app.api.coach import router as coach_router
+from app.api.coach_workflow import router as coach_workflow_router
 from app.api.materials import router as materials_router
 from app.api.pdf_import import router as pdf_import_router
 from app.api.public_import import router as public_import_router
 from app.api.routes import router
 from app.api.syllabus import router as syllabus_router
+from app.clients.coach_workflow import CoachWorkflowClient
 from app.core.config import Settings
 from app.core.errors import ServiceError, error_response
 from app.core.security import NonceStore, authenticate
@@ -21,6 +28,18 @@ from app.llm.base import LLMProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
 from app.providers.ark import ArkEmbeddingProvider
 from app.providers.deepseek import DeepSeekFetchProvider, DeepSeekSearchProvider
+
+
+def _checkpoint_path(value: str) -> str:
+    if value == ":memory:":
+        return value
+    path = Path(value).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # WAL/SHM继承数据库权限；不修改已有用户目录的权限。
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.close(descriptor)
+    path.chmod(0o600)
+    return str(path)
 
 
 def create_app(
@@ -41,7 +60,20 @@ def create_app(
         application.state.search_provider = search
         application.state.fetch_provider = fetch
         application.state.embedding_provider = embedding_provider
+        resources = AsyncExitStack()
+        workflow_client = CoachWorkflowClient(config)
+        application.state.coach_workflow_client = workflow_client
+        application.state.coach_workflow_active = set()
+        application.state.coach_workflow_claim_lock = asyncio.Lock()
         try:
+            checkpoint_path = await asyncio.to_thread(
+                _checkpoint_path, config.coach_checkpoint_path
+            )
+            saver = await resources.enter_async_context(
+                AsyncSqliteSaver.from_conn_string(checkpoint_path)
+            )
+            await saver.setup()
+            application.state.coach_workflow_graph = build_coach_workflow(saver)
             if embedding_provider is None and config.embedding_configured:
                 application.state.embedding_provider = ArkEmbeddingProvider(config)
             if search is None and config.search_configured:
@@ -67,6 +99,9 @@ def create_app(
             )
             yield
         finally:
+            application.state.coach_workflow_graph = None
+            await workflow_client.aclose()
+            await resources.aclose()
             application.state.extraction_graph = None
             application.state.candidate_graph = None
             application.state.coach_graph = None
@@ -130,6 +165,7 @@ def create_app(
 
     application.include_router(router)
     application.include_router(coach_router)
+    application.include_router(coach_workflow_router)
     application.include_router(materials_router)
     application.include_router(public_import_router)
     application.include_router(pdf_import_router)

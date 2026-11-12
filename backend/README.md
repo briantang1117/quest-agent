@@ -12,6 +12,8 @@
 
 考纲索引将向量存入 PostgreSQL pgvector；当前检索在 Java 中对同版本、科目和模型维度匹配的候选计算余弦相似度，并提供同版本关键词降级，不应描述为已使用数据库 ANN 搜索。教练会话绑定创建时的考纲版本，工具执行在 Python，Java 接收工具状态并校验来源。
 
+PC陪练默认由Python LangGraph编排，明确点击提交走固定判分节点，Java通过受限内部接口提供权威判分等业务能力。回调须同时通过HMAC与Java签发的短期轮次授权；Java不跨外部调用持有事务。Python图检查点使用本机SQLite，业务状态仍在Java管理的PG。配置与失败语义见[编排技术说明](../docs/做题Agent编排技术说明.md)。
+
 资料 MQ 的代码已经存在；旧通用 Outbox 未实现，`OUTBOX_ENABLED=true` 会明确拒绝启动。不要把两者混为一谈。公共题库 PDF 分批执行及考纲调度位于 API 进程，不由 Worker 统一承接。
 
 ## 启动边界
@@ -22,4 +24,4 @@
 
 ## 后续验证
 
-本次仅静态核对，未执行 Java 测试、迁移、NAS 连接、真实模型或 MQ 投递。测试源码覆盖用户、安全、公共题库、考纲、教练、资料和 Worker；存在测试不等于本次通过。后续应先在隔离环境运行 `bash mvnw -B -ntp clean verify`，再核验 PostgreSQL 迁移/权限、Python 签名契约、预建 MQ Topic、故障恢复及真实模型成本。Redis、MinIO 出现在配置样例，不能据此认定 Java 已实现缓存或对象存储接入。
+本轮陪练编排已执行API/common verify及修复后的定向回归，详见编排技术说明；未执行迁移、NAS连接、真实模型或MQ投递。测试源码覆盖用户、安全、公共题库、考纲、教练、资料和 Worker；存在测试不等于本次通过。后续应先在隔离环境运行 `bash mvnw -B -ntp clean verify`，再核验 PostgreSQL 迁移/权限、Python 签名契约、预建 MQ Topic、故障恢复及真实模型成本。Redis、MinIO 出现在配置样例，不能据此认定 Java 已实现缓存或对象存储接入。

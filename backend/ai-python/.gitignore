@@ -7,3 +7,6 @@ __pycache__/
 .env.*
 !.env.example
 .idea/
+
+# 本机LangGraph检查点（包含学习上下文）
+runtime/

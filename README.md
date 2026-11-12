@@ -11,7 +11,7 @@
 | 层         | 当前技术                                                                                                     |
 | ---------- | ------------------------------------------------------------------------------------------------------------ |
 | Java       | Java 27、Spring Boot 4.1.2、Security/JWT、JdbcTemplate事务、Flyway、Maven wrapper；依赖含MyBatis-Plus 3.5.18 |
-| Python     | Python >=3.11、FastAPI、Pydantic、HTTPX、LangGraph、pypdf、uv                                                |
+| Python     | Python >=3.11、FastAPI、Pydantic、HTTPX、LangGraph + 本机SQLite检查点、pypdf、uv                                                |
 | PC / 移动  | Vue 3、TypeScript、Router、Pinia、Arco / Vant、Vite、pnpm workspace                                          |
 | 存储与队列 | PostgreSQL16+pgvector；学习资料专用RocketMQ5.3.1；Redis/S3服务有部署配置，未接完整业务适配                   |
 | 模型       | OpenAI-compatible文本接口；OCR/Embedding/Search/Fetch各自独立适配和凭据                                      |
@@ -26,7 +26,7 @@ bash frontend/start-pc.sh
 bash backend/scripts/start-worker.sh
 ```
 
-不要复制模板覆盖已有环境，也不要把脚本打包成功当作测试通过。工具调用默认开启；学习资料 API 和 MQ Worker 各有默认关闭的独立开关，详见专项文档。
+不要复制模板覆盖已有环境，也不要把脚本打包成功当作测试通过。陪练默认由LangGraph编排，确认提交通过固定节点调用Java判分；[技术说明](docs/做题Agent编排技术说明.md)包含检查点与回滚配置。工具调用默认开启；学习资料 API 和 MQ Worker 各有默认关闭的独立开关，详见专项文档。
 
 - [文档导航](docs/README.md)：各主题唯一入口。
 - [项目现状](docs/项目现状.md)：做了什么、证据和缺口。

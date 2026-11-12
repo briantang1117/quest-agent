@@ -214,6 +214,11 @@ def _messages(payload: CoachRequest, instruction: str, extra: str | None = None)
 
 @router.post("/internal/coach-route")
 async def coach_route(payload: CoachRequest, request: Request):
+    result = await route_intent(payload, request)
+    return envelope(request.state.trace_id, data=result)
+
+
+async def route_intent(payload: CoachRequest, request: Request):
     provider = _provider(payload, request)
     messages = _messages(
         payload,
@@ -237,7 +242,7 @@ async def coach_route(payload: CoachRequest, request: Request):
     except (ValueError, TypeError, RecursionError) as exc:
         _diagnose("coach_route", exc, request)
         raise ServiceError(502, 50203, "陪练模型返回无效意图") from exc
-    return envelope(request.state.trace_id, data=result)
+    return result
 
 
 def _event(name: str, data: dict) -> str:
@@ -247,6 +252,17 @@ def _event(name: str, data: dict) -> str:
 @router.post("/internal/coach-explain")
 async def coach_explain(payload: CoachRequest, request: Request):
     """可选工具循环；最终正文完整验证后才发送来源、建议与 done。"""
+    _provider(payload, request)
+
+    async def events():
+        async with aclosing(explanation_events(payload, request)) as stream:
+            async for name, data in stream:
+                yield _event(name, data)
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+async def explanation_events(payload: CoachRequest, request: Request):
     provider = _provider(payload, request)
     instruction = (
         "负责普通聊天、通用知识答疑或已作答题目的讲解，不识别或执行轮次动作。"
@@ -274,58 +290,53 @@ async def coach_explain(payload: CoachRequest, request: Request):
         )
     messages = _messages(payload, instruction, extra=external)
 
-    async def events():
-        parser = JsonReplyStream()
-        sources = []
-        try:
-            if use_tools:
-                async with aclosing(
-                    explain_with_tools(
-                        provider,
-                        search,
-                        messages,
-                        fetch=fetch,
-                        max_tool_calls=request.app.state.settings.coach_max_tool_calls,
-                        max_tool_rounds=request.app.state.settings.coach_max_tool_rounds,
-                    )
-                ) as stream:
-                    async for event in stream:
-                        if event["type"] == "tool_status":
-                            yield _event(
-                                "tool_status", {"tool": event["tool"], "status": event["status"]}
-                            )
-                        elif event["type"] == "tool_audit":
-                            yield _event(
-                                "tool_audit",
-                                {key: value for key, value in event.items() if key != "type"},
-                            )
-                        elif event["type"] == "sources":
-                            sources = event["items"]
-                        elif event["type"] == "content":
-                            text = parser.feed(event["text"])
-                            if text:
-                                yield _event("delta", {"text": text})
-            else:
-                async with aclosing(
-                    provider.stream_text(messages, json_mode=True, long_form=True)
-                ) as stream:
-                    async for chunk in stream:
-                        text = parser.feed(chunk)
+    parser = JsonReplyStream()
+    sources = []
+    try:
+        if use_tools:
+            async with aclosing(
+                explain_with_tools(
+                    provider,
+                    search,
+                    messages,
+                    fetch=fetch,
+                    max_tool_calls=request.app.state.settings.coach_max_tool_calls,
+                    max_tool_rounds=request.app.state.settings.coach_max_tool_rounds,
+                )
+            ) as stream:
+                async for event in stream:
+                    if event["type"] == "tool_status":
+                        yield "tool_status", {"tool": event["tool"], "status": event["status"]}
+                    elif event["type"] == "tool_audit":
+                        yield (
+                            "tool_audit",
+                            {key: value for key, value in event.items() if key != "type"},
+                        )
+                    elif event["type"] == "sources":
+                        sources = event["items"]
+                    elif event["type"] == "content":
+                        text = parser.feed(event["text"])
                         if text:
-                            yield _event("delta", {"text": text})
-            result = ExplanationReply.model_validate(parser.finish())
-        except ServiceError as failure:
-            _diagnose("coach_explain", failure, request, parser)
-            yield _event("error", {"code": failure.code})
-            return
-        except (ValueError, TypeError, RecursionError) as failure:
-            _diagnose("coach_explain", failure, request, parser)
-            # 半截正文不可回收；Java/前端必须丢弃，不能将其保存为成功回复。
-            yield _event("error", {"code": 50203})
-            return
-        if sources:
-            yield _event("sources", {"items": sources})
-        yield _event("suggestions", {"items": result.suggestions})
-        yield _event("done", {})
-
-    return StreamingResponse(events(), media_type="text/event-stream")
+                            yield "delta", {"text": text}
+        else:
+            async with aclosing(
+                provider.stream_text(messages, json_mode=True, long_form=True)
+            ) as stream:
+                async for chunk in stream:
+                    text = parser.feed(chunk)
+                    if text:
+                        yield "delta", {"text": text}
+        result = ExplanationReply.model_validate(parser.finish())
+    except ServiceError as failure:
+        _diagnose("coach_explain", failure, request, parser)
+        yield "error", {"code": failure.code}
+        return
+    except (ValueError, TypeError, RecursionError) as failure:
+        _diagnose("coach_explain", failure, request, parser)
+        # 半截正文不可回收；Java/前端必须丢弃，不能将其保存为成功回复。
+        yield "error", {"code": 50203}
+        return
+    if sources:
+        yield "sources", {"items": sources}
+    yield "suggestions", {"items": result.suggestions}
+    yield "done", {}

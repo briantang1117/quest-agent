@@ -14,7 +14,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
-RUN groupadd --system ai && useradd --system --gid ai --no-create-home ai
+RUN groupadd --system ai && useradd --system --gid ai --no-create-home ai \
+    && install -d -m 0700 -o ai -g ai /app/runtime
 USER ai
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
