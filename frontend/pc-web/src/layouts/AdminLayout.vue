@@ -125,8 +125,8 @@ async function logout() {
         :selected-keys="[contentSection ? 'content' : 'system']"
         aria-label="一级导航"
       >
-        <a-menu-item key="system" @click="router.push('/admin/users')">系统管理</a-menu-item>
         <a-menu-item key="content" @click="router.push('/admin/banks')">内容管理</a-menu-item>
+        <a-menu-item key="system" @click="router.push('/admin/users')">系统管理</a-menu-item>
       </a-menu>
       <div class="admin-account">
         <a-dropdown trigger="click" position="br">
