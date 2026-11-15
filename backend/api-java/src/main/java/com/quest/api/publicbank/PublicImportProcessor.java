@@ -36,7 +36,7 @@ public class PublicImportProcessor {
         });
         if(work==null)return false;
         try {
-            var result=work.candidate()==null?ai.extract(work.text()):ai.extractCandidate(work.text(),json.readTree(work.candidate()));var draft=result.get("draft");
+            var result=PublicAiClient.asActor(new PublicAiClient.Caller(work.importer(),work.id().toString()),()->work.candidate()==null?ai.extract(work.text()):ai.extractCandidate(work.text(),json.readTree(work.candidate())));var draft=result.get("draft");
             if(work.document()!=null && result instanceof tools.jackson.databind.node.ObjectNode object){object.put("document_id",work.document().toString());object.set("source_candidate",json.readTree(work.candidate()));}
             if(draft==null || draft.isNull()){
                 db.update("UPDATE public_import_task SET status='failed',error_message=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='processing'","材料存在歧义或题目不完整，请拆分并核对后重新提交",work.id());return true;

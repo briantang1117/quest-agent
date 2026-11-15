@@ -16,7 +16,7 @@ import java.util.*;
 
 /** 仅允许精确的资料内部POST；签名绑定原始正文，并限制nonce缓存容量。 */
 public final class MaterialInternalFilter extends OncePerRequestFilter {
-    public static final Set<String> PATHS=Set.of("/internal/materials/outbox/claim","/internal/materials/outbox/ack","/internal/materials/execute");
+    public static final Set<String> PATHS=Set.of("/internal/meter/reserve","/internal/meter/settle","/internal/materials/outbox/claim","/internal/materials/outbox/ack","/internal/materials/execute");
     public static final String VERIFIED=MaterialInternalFilter.class.getName();
     private final String token,secret;private final ObjectMapper json;
     private final Map<String,Long> nonces=new HashMap<>();

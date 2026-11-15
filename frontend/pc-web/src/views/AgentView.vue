@@ -108,7 +108,9 @@ const current = computed(() => session.value?.currentQuestion)
 // 只渲染后端可信的建议；前端不再自行拼产品文案。
 const quickActions = computed(() =>
   (session.value?.messages.at(-1)?.suggestions ?? []).filter(
-    (item) => item.action === 'next' || item.action === 'chat',
+    (item) =>
+      (item.action === 'next' || item.action === 'chat') &&
+      (!item.required_feature || session.value?.capabilities?.[item.required_feature] === true),
   ),
 )
 function runQuick(item: { action: 'next' | 'chat'; text?: string }) {
@@ -440,7 +442,7 @@ watch(
           <span>{{ session ? subjectLabel(session.subject) : '答疑与练习，在同一段对话中' }}</span>
         </div>
         <a-button
-          v-if="session"
+          v-if="session && session.capabilities?.materials !== false"
           data-test="create-material"
           :loading="materialBusy"
           :disabled="loading || busy || session.processing || materials.some(isActiveMaterial)"
@@ -548,8 +550,8 @@ watch(
         </div>
       </div>
       <form v-if="session" class="coach-composer" @submit.prevent="send('chat')">
-        <label class="sr-only" for="coach-input">消息</label
-        ><a-textarea
+        <label class="sr-only" for="coach-input">消息</label>
+        <a-textarea
           id="coach-input"
           v-model="draft"
           placeholder="输入答案、说说思路，或追问一个知识点…"
@@ -559,8 +561,7 @@ watch(
           @keydown="onComposerKeydown"
         />
         <div>
-          <span>选项提交后核对答案；含糊表达会先向你确认。</span
-          ><a-button
+          <a-button
             html-type="submit"
             type="primary"
             :loading="busy"
@@ -786,14 +787,10 @@ watch(
 }
 .coach-composer > div {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   gap: 16px;
   margin-top: 12px;
-}
-.coach-composer span {
-  font-size: 12px;
-  color: var(--color-text-3);
 }
 .coach-welcome {
   text-align: center;

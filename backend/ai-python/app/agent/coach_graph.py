@@ -6,6 +6,11 @@ from typing import Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from app.agent.coach_capabilities import (
+    SUGGESTION_CAPABILITY_PROMPT,
+    filter_suggestions,
+    normalize_intent,
+)
 from app.core.errors import ServiceError
 from app.llm.base import LLMProvider
 
@@ -26,7 +31,9 @@ SYLLABUS_PROMPT = (
 
 
 MATERIAL_INTENT_PROMPT = (
-    "明确要求把本次对话整理为学习资料/复习材料时action为material，不生成完整讲解，"
+    "只有明确要求创建、保存、下载、导出文档/文件，或把对话做成一份学习资料/复习材料时，action才为material，不生成完整讲解。"
+    "梳理知识点、总结内容、比较概念、列对比表或复习提纲，默认在聊天内完成，action为chat；"
+    "不能因为出现整理、总结、材料或表格就创建文档任务。"
     "仅给简短确认，交由Java创建任务，不调用额外explain。"
     "否定（不要整理）、询问功能（能整理吗/如何整理）或引用他人的整理命令不执行，按chat回答；"
     "不能仅凭关键词触发，含糊意图先clarify。material的keys必须为空，不声称文件已保存。"
@@ -40,6 +47,7 @@ class Suggestion(BaseModel):
     action: Literal["next", "chat"]
     label: str = Field(min_length=1, max_length=20)
     text: str = Field(default="", max_length=200)
+    required_feature: Literal["materials", "search", "syllabus", "coach"] | None = None
 
 
 class CoachReply(BaseModel):
@@ -57,7 +65,7 @@ class CoachReply(BaseModel):
         cleaned: list[dict] = []
         for item in self.suggestions:
             try:
-                cleaned.append(Suggestion.model_validate(item).model_dump())
+                cleaned.append(Suggestion.model_validate(item).model_dump(exclude_none=True))
             except ValidationError:
                 continue
         object.__setattr__(self, "suggestions", cleaned[:4])
@@ -97,6 +105,7 @@ def build_coach_graph(provider: LLMProvider):
                         "建议要贴合当前场景：纯答疑时不要硬推下一题；已判分且有新题时可给next。"
                         "建议只是候选，是否可用由Java判定。"
                         "回复JSON，包含action(next/answer/chat/clarify/material)、keys(仅answer时非空)、reply、suggestions。"
+                        + SUGGESTION_CAPABILITY_PROMPT
                         + MATERIAL_INTENT_PROMPT
                         + SYLLABUS_PROMPT
                     ),
@@ -119,6 +128,10 @@ def build_coach_graph(provider: LLMProvider):
             except (ValueError, ValidationError):
                 last = ServiceError(502, 50203, "陪练模型返回无效内容，已重试仍未通过")
                 continue
+            result = normalize_intent(result, state["context"]["message"])
+            result["suggestions"] = filter_suggestions(
+                result["suggestions"], state["context"].get("capabilities", {})
+            )
             return {"content": content, "result": result}
         raise last or ServiceError(502, 50203, "陪练模型返回无效内容")
 

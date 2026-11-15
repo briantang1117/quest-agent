@@ -17,6 +17,8 @@ import java.util.*;
 
 @Component
 public class PublicAiClient {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.quest.api.admin.ModelMeterService meter;
     private final ObjectMapper json;
     private final String base,token,secret;
     private final com.quest.api.coach.AiCallAudit audit;
@@ -29,9 +31,19 @@ public class PublicAiClient {
                           com.quest.api.coach.AiCallAudit audit){this.json=json;this.base=base;this.token=token;this.secret=secret;this.audit=audit;}
     /** actor 与 traceId 只用于审计归因，不参与签名。 */
     public record Caller(Long actor,String traceId){}
+    private static final ThreadLocal<Caller> BACKGROUND=new ThreadLocal<>();
+    public static <T>T asActor(Caller caller,java.util.function.Supplier<T> work){var prior=BACKGROUND.get();BACKGROUND.set(caller);try{return work.get();}finally{if(prior==null)BACKGROUND.remove();else BACKGROUND.set(prior);}}
+    private Caller effective(Caller caller){
+        if(caller!=null)return caller;if(BACKGROUND.get()!=null)return BACKGROUND.get();
+        var attributes=org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if(attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet&&servlet.getRequest().getAttribute(com.quest.api.auth.UserController.IDENTITY) instanceof com.quest.api.auth.UserModels.SessionIdentity who)return new Caller(Long.valueOf(who.user().id()),com.quest.api.common.TraceFilter.traceId(servlet.getRequest()));
+        return null;
+    }
     public JsonNode coachTurn(Object payload,Caller caller) { return post("/internal/coach-turn",payload,128*1024,caller); }
     public JsonNode coachRoute(Object payload,Caller caller) { return post("/internal/coach-route",payload,128*1024,caller); }
     public JsonNode coachTurn(Object payload) { return post("/internal/coach-turn",payload,128*1024,null); }
+    public JsonNode extract(String text,Caller caller){return post("/internal/public-import",Map.of("scope","admin","text",text),256*1024,caller);}
+    public JsonNode extractCandidate(String text,JsonNode candidate,Caller caller){return post("/internal/public-import",Map.of("scope","admin","text",text,"candidate",candidate),256*1024,caller);}
     public JsonNode extract(String text) { return post("/internal/public-import",Map.of("scope","admin","text",text),256*1024,null); }
     public JsonNode extractCandidate(String text,JsonNode candidate) { return post("/internal/public-import",Map.of("scope","admin","text",text,"candidate",candidate),256*1024,null); }
     public JsonNode inspectPdf(byte[] pdf) { return post("/internal/pdf-inspect",Map.of("scope","admin","pdf_base64",Base64.getEncoder().encodeToString(pdf)),2*1024*1024,null); }
@@ -107,7 +119,7 @@ public class PublicAiClient {
             String message=String.join("\n",stamp,nonce,"POST",path,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)));
             Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8),"HmacSHA256"));
             var request=HttpRequest.newBuilder(root.resolve(path)).timeout(Duration.ofSeconds(timeout)).header("Content-Type","application/json")
-                .header("X-Service-Token",token).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
+                .header("X-Service-Token",token).header("X-Usage-Grant",meter==null?"":meter.issue(caller,path)).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
             var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
             try(var stream=response.body()){
@@ -122,7 +134,7 @@ public class PublicAiClient {
                     if(ch!='\n'){if(ch!='\r')line.append((char)ch);if(line.length()>32768)throw new UserFailure(503,50204,"AI服务事件超出上限");continue;}
                     String value=line.toString();line.setLength(0);
                     if(value.isEmpty()){
-                        if(event.equals("error"))throw new UserFailure(503,50203,"AI回答未完整生成");
+                        if(event.equals("error")){int code=json.readTree(data.toString()).path("code").asInt();if(code==40240)throw new UserFailure(402,40240,"该模型token余额不足，请联系管理员充值");if(code==40341)throw new UserFailure(403,40341,"此功能尚未开放，请联系管理员");throw new UserFailure(503,50203,"AI回答未完整生成");}
                         if(event.equals("done")){done=true;break;}
                         if(event.equals("delta")){
                             JsonNode parsed=json.readTree(data.toString());if(!parsed.path("text").isString())throw new UserFailure(503,50204,"AI服务流格式错误");
@@ -194,6 +206,7 @@ public class PublicAiClient {
         return doPost(path,payload,maxResponse,caller,action,started,timeout,null);
     }
     private JsonNode doPost(String path,Object payload,int maxResponse,Caller caller,String action,long started,Duration timeout,com.quest.api.coach.CoachStreamControl control) {
+        caller=effective(caller);
         if(token.isBlank() || secret.length()<32)throw new UserFailure(503,50321,"内部AI服务未配置");
         try {
             URI root=URI.create(base);
@@ -203,7 +216,7 @@ public class PublicAiClient {
             String message=String.join("\n",stamp,nonce,"POST",path,HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(body)));
             Mac mac=Mac.getInstance("HmacSHA256");mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8),"HmacSHA256"));
             var request=HttpRequest.newBuilder(root.resolve(path)).timeout(timeout).header("Content-Type","application/json")
-                .header("X-Service-Token",token).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
+                .header("X-Service-Token",token).header("X-Usage-Grant",meter==null?"":meter.issue(caller,path)).header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",HexFormat.of().formatHex(mac.doFinal(message.getBytes(StandardCharsets.UTF_8))))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body)).build();
             // 无应用级自动重试；故障不回显上游响应/URL/签名。
             var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
@@ -218,6 +231,8 @@ public class PublicAiClient {
             JsonNode envelope=json.readTree(raw);
             if(response.statusCode()!=200){
                 String upstream=String.valueOf(envelope.path("code").asInt(0));
+                if(upstream.equals("40240"))throw new UserFailure(402,40240,"该模型token余额不足，请联系管理员充值");
+                if(upstream.equals("40341"))throw new UserFailure(403,40341,"此功能尚未开放，请联系管理员");
                 throw new UserFailure(503,50200,"AI服务返回错误（上游码 "+upstream+"）");
             }
             if(!envelope.path("code").isIntegralNumber() || envelope.path("code").asInt()!=0 || !envelope.path("data").isObject())throw new IllegalStateException();

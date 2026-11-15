@@ -500,4 +500,25 @@ class StudentCoachTest {
         postData("/api/v1/coach/sessions/"+session+"/turns",bob,Map.of("requestId",UUID.randomUUID(),"action","next","text",""),404);
         mvc.perform(get("/api/v1/coach/sessions").header("Authorization","Bearer "+bob)).andExpect(status().isOk()).andExpect(jsonPath("$.data.list.length()").value(0));
     }
+    @Test void suggestionsAndHistoryUseCurrentCapabilitiesWithoutBlockingInlineTables()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var reply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"对比说明\",\"suggestions\":[{\"action\":\"chat\",\"label\":\"梳理考点\",\"text\":\"梳理常考提法，做成对比表。\"},{\"action\":\"chat\",\"label\":\"生成文档\",\"text\":\"把本次对话总结成文档\"}]}");
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{Map<?,?> context=call.getArgument(0);assertThat(((Map<?,?>)context.get("capabilities")).get("materials")).isEqualTo(false);return reply;});
+        JsonNode after=postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","比较概念"),200);
+        assertThat(after.path("capabilities").path("materials").asBoolean()).isFalse();
+        assertThat(after.path("messages").get(after.path("messages").size()-1).path("suggestions").toString()).contains("梳理考点").doesNotContain("生成文档");
+        var persisted=(tools.jackson.databind.node.ObjectNode)json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+        ((tools.jackson.databind.node.ObjectNode)persisted.withArray("messages").get(persisted.path("messages").size()-1)).set("suggestions",reply.path("suggestions"));
+        String raw=json.writeValueAsString(persisted);db.update("UPDATE student_coach_session SET state_json=? WHERE id=?",raw,session);
+        var visible=json.readTree(mvc.perform(get("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
+        assertThat(visible.path("messages").get(visible.path("messages").size()-1).path("suggestions").toString()).contains("梳理考点").doesNotContain("生成文档");
+        assertThat(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo(raw);
+    }
+    @Test void legacyModelCannotTurnInlineOrganizationIntoMaterialTask()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var wrong=json.readTree("{\"action\":\"material\",\"keys\":[],\"reply\":\"按对比维度组织内容。\"}");
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(wrong);
+        postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","梳理常考提法，做成对比表。"),200);
+    }
+
 }

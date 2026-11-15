@@ -13,3 +13,5 @@ export * from './coach-api'
 export * from './ai-audit-api'
 export * from './syllabus-api'
 export * from './materials-api'
+
+export * from './admin-control-api'

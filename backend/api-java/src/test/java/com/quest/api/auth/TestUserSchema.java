@@ -16,6 +16,8 @@ public final class TestUserSchema {
             if (!sql.contains(sequenceGrant)) throw new AssertionError("Expected explicit sequence privileges");
             sql = sql.replace(sequenceGrant, "");
             new ResourceDatabasePopulator(new ByteArrayResource(sql.getBytes(StandardCharsets.UTF_8))).execute(db.getDataSource());
+            String controls=new ClassPathResource("db/migration/V14__admin_controls_and_usage.sql").getContentAsString(StandardCharsets.UTF_8).replaceAll("(?m)^(GRANT|REVOKE).*;", "");
+            new ResourceDatabasePopulator(new ByteArrayResource(controls.getBytes(StandardCharsets.UTF_8))).execute(db.getDataSource());
         } catch (java.io.IOException exception) { throw new IllegalStateException(exception); }
     }
 }

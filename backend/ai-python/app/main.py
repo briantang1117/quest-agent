@@ -21,6 +21,7 @@ from app.api.public_import import router as public_import_router
 from app.api.routes import router
 from app.api.syllabus import router as syllabus_router
 from app.clients.coach_workflow import CoachWorkflowClient
+from app.clients.model_meter import checked_grant, meter_context
 from app.core.config import Settings
 from app.core.errors import ServiceError, error_response
 from app.core.security import NonceStore, authenticate
@@ -138,7 +139,25 @@ def create_app(
                 # Query parameters are not signed by the protocol; reject them.
                 if request.url.query:
                     raise ServiceError(400, 40001, "Internal routes do not accept query parameters")
-            response = await call_next(request)
+            context_token = None
+            if config.ai_metering_enabled and request.url.path.startswith("/internal/"):
+                exempt = {
+                    "/internal/material-pdf",
+                    "/internal/pdf-inspect",
+                    "/internal/syllabus-inspect",
+                }
+                if request.url.path not in exempt:
+                    grant = checked_grant(
+                        request.headers.get("X-Usage-Grant", ""), request.url.path, config
+                    )
+                    context_token = meter_context.set(
+                        (grant, request.url.path.removeprefix("/internal/"))
+                    )
+            try:
+                response = await call_next(request)
+            finally:
+                if context_token is not None:
+                    meter_context.reset(context_token)
         except ServiceError as exc:
             response = error_response(request, exc)
         response.headers["X-Trace-Id"] = request.state.trace_id

@@ -10,6 +10,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agent import coach_search
+from app.agent.coach_capabilities import (
+    SUGGESTION_CAPABILITY_PROMPT,
+    filter_suggestions,
+    normalize_intent,
+)
 from app.agent.coach_graph import MATERIAL_INTENT_PROMPT, SYLLABUS_PROMPT, CoachReply, Suggestion
 from app.agent.coach_tools import explain_with_tools
 from app.core.errors import ServiceError, envelope
@@ -131,6 +136,7 @@ class CoachRequest(Contract):
     scope: Literal["admin", "student"]
     subject: Literal["vocational_aptitude", "administrative_aptitude"] = "vocational_aptitude"
     message: str = Field(min_length=1, max_length=2000)
+    capabilities: dict[str, bool] = Field(default_factory=dict)
     history: list[HistoryMessage] = Field(default_factory=list, max_length=12)
     question: VisibleQuestion | None = None
     result: SubmittedResult | None = None
@@ -160,6 +166,22 @@ async def coach_turn(payload: CoachRequest, request: Request):
 class RouteReply(CoachReply):
     reply: str = Field(min_length=1, max_length=200)
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_unused_long_reply(cls, value):
+        # chat/next/answer/material的reply不是正文，长讲解直接丢弃，不截断后展示，
+        # 不为修正无用字段再次调用模型；clarify文案仍须完整且有界。
+        if isinstance(value, dict) and isinstance(value.get("reply"), str):
+            confirmations = {
+                "chat": "继续解答。",
+                "next": "继续下一题。",
+                "answer": "请在题卡确认选项后提交。",
+                "material": "请求生成学习文档。",
+            }
+            if value.get("action") in confirmations and len(value["reply"]) > 200:
+                return {**value, "reply": confirmations[value["action"]]}
+        return value
+
     @field_validator("reply")
     @classmethod
     def nonblank(cls, value):
@@ -184,7 +206,7 @@ class ExplanationReply(BaseModel):
                     suggestion.action == "chat" and not suggestion.text.strip()
                 ):
                     continue
-                cleaned.append(suggestion.model_dump())
+                cleaned.append(suggestion.model_dump(exclude_none=True))
             except ValidationError:
                 continue
         return cleaned
@@ -235,8 +257,8 @@ async def route_intent(payload: CoachRequest, request: Request):
         "不能把假设、引用、排除选项或‘为什么不选A’当作提交，需澄清。"
         "输出JSON {action:next|answer|chat|clarify|material,keys:[],"
         "reply:简短确认或澄清文案,suggestions:[]}。"
-        "keys仅answer时非空且不重复；reply最多200字，不讲解、不判分，suggestions留空。"
-        + MATERIAL_INTENT_PROMPT,
+        "keys仅answer时非空且不重复；reply只给一句确认，最多80字，绝不回答问题、不输出表格或正文；"
+        "完整讲解由后续独立节点生成，suggestions留空。" + MATERIAL_INTENT_PROMPT,
     )
     try:
         content = await provider.generate_json(messages)
@@ -250,7 +272,7 @@ async def route_intent(payload: CoachRequest, request: Request):
     except (ValueError, TypeError, RecursionError) as exc:
         _diagnose("coach_route", exc, request)
         raise ServiceError(502, 50203, "陪练模型返回无效意图") from exc
-    return result
+    return normalize_intent(result, payload.message)
 
 
 def _event(name: str, data: dict) -> str:
@@ -277,7 +299,7 @@ async def explanation_events(payload: CoachRequest, request: Request):
         "只输出JSON {reply:正文,suggestions:[]}，reply最多6000字。"
         "建议最多4条，每条{action:next|chat,label:不超过20字,text:不超过200字}；"
         "chat的text是用户下次要发送的话。建议贴合场景，纯答疑不要硬推下一题。"
-        "不能在其他字段夹带正文、答案、判分或执行结果。"
+        "不能在其他字段夹带正文、答案、判分或执行结果。" + SUGGESTION_CAPABILITY_PROMPT
     )
     search = getattr(request.app.state, "search_provider", None)
     fetch = getattr(request.app.state, "fetch_provider", None)
@@ -346,5 +368,5 @@ async def explanation_events(payload: CoachRequest, request: Request):
         return
     if sources:
         yield "sources", {"items": sources}
-    yield "suggestions", {"items": result.suggestions}
+    yield "suggestions", {"items": filter_suggestions(result.suggestions, payload.capabilities)}
     yield "done", {}

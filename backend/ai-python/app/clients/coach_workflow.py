@@ -81,6 +81,8 @@ class CoachWorkflowClient:
                     response.status_code,
                     code,
                 )
+                if code == 40341:
+                    raise ServiceError(403, 40341, "此功能尚未开放，请联系管理员")
                 raise ServiceError(502, 50203, "业务工具调用失败")
             result = json.loads(raw)
             if (

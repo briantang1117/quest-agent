@@ -113,6 +113,33 @@ def test_text_answer_only_suggests_and_waits_for_confirmation():
     assert "event: done" in response.text
 
 
+def test_chat_with_long_route_reply_still_explains_once_without_document_task():
+    class LongRouteProvider(Provider):
+        async def generate_json(self, messages):
+            self.routes += 1
+            return json.dumps({"action": "chat", "keys": [], "reply": "SECRET_ROUTER_DRAFT" * 100})
+
+    class ContentBusiness(Business):
+        async def step(self, grant, step, **kwargs):
+            self.steps.append((grant, step, kwargs))
+            return {
+                "scope": "student",
+                "message": "梳理常考提法，做成对比表。",
+                "capabilities": {"materials": False},
+            }
+
+    provider, business = LongRouteProvider(), ContentBusiness()
+    with TestClient(create_app(settings(), provider=provider)) as client:
+        client.app.state.coach_workflow_client = business
+        response = submit(client, "chat")
+    assert "event: done" in response.text
+    assert "event: error" not in response.text
+    assert "SECRET_ROUTER_DRAFT" not in response.text
+    assert provider.routes == 1
+    assert provider.explanations == 1
+    assert [step for _, step, _ in business.steps] == ["context"]
+
+
 def test_callback_failure_does_not_generate_explanation_or_retry():
     provider, business = Provider(), Business("submit_answer")
     with TestClient(create_app(settings(), provider=provider)) as client:

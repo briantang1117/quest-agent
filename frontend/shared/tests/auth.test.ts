@@ -49,6 +49,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
   vi.useFakeTimers()
   localStorage.clear()
+  sessionStorage.clear()
 })
 afterEach(() => {
   useAuthStore().clearSession()
@@ -67,12 +68,12 @@ describe('持久化凭据恢复与会话竞态', () => {
     await auth.login({ username: 'student_a', password: ' password1234 ' })
     expect(auth.user?.id).toBe('9007199254740993')
     expect(auth.authenticated).toBe(true)
-    expect(localStorage.length).toBe(1)
-    const stored = JSON.parse(localStorage.getItem('quest.auth.session')!)
+    expect(sessionStorage.length).toBe(1)
+    const stored = JSON.parse(sessionStorage.getItem('quest.auth.session')!)
     expect(stored.accessToken).toBe('first')
     expect(stored).not.toHaveProperty('user')
     expect(stored).not.toHaveProperty('password')
-    expect(sessionStorage.length).toBe(0)
+    expect(localStorage.length).toBe(0)
     axios.defaults.adapter = async (config) => {
       expect(config.url).toBe('/api/v1/auth/me')
       expect(config.headers.get('Authorization')).toBe('Bearer first')
@@ -101,16 +102,11 @@ describe('持久化凭据恢复与会话竞态', () => {
     expect(auth.authenticated).toBe(false)
     expect(localStorage.getItem('quest.auth.session')).toBeNull()
   })
-  it('过期、损坏或服务地址不匹配的缓存不会发出请求', async () => {
+  it('损坏或服务地址不匹配的缓存不会发出请求', async () => {
     const adapter = vi.fn(async (config: InternalAxiosRequestConfig) => response(config, user))
     const auth = setup(adapter)
     for (const value of [
       'invalid-json',
-      JSON.stringify({
-        baseURL: '/gateway',
-        accessToken: 'old',
-        expiresAt: new Date(Date.now() - 1).toISOString(),
-      }),
       JSON.stringify({
         baseURL: 'http://other',
         accessToken: 'other',
@@ -142,12 +138,28 @@ describe('持久化凭据恢复与会话竞态', () => {
     expect(auth.authenticated).toBe(false)
     expect(localStorage.getItem('quest.auth.session')).toBeNull()
   })
-  it('到期自动清除token和身份', async () => {
-    const auth = setup(async (config) => response(config, result()))
+  it('到期前续期并保持登录，不重放业务请求', async () => {
+    let refreshed = 0
+    const auth = setup(async (config) => {
+      if (config.url?.endsWith('/refresh')) {
+        refreshed++
+        expect(config.headers.get('X-Refresh-Intent')).toBe('1')
+        expect(config.headers.has('Authorization')).toBe(false)
+        return response(config, {
+          ...result('rotated'),
+          expiresAt: new Date(Date.now() + 900000).toISOString(),
+        })
+      }
+      return response(config, {
+        ...result(),
+        expiresAt: new Date(Date.now() + 900000).toISOString(),
+      })
+    })
     await auth.login({ username: 'student_a', password: 'password1234' })
-    await vi.advanceTimersByTimeAsync(7200000)
-    expect(auth.user).toBeNull()
-    expect(auth.token).toBe('')
+    await vi.advanceTimersByTimeAsync(840000)
+    expect(refreshed).toBe(1)
+    expect(auth.token).toBe('rotated')
+    expect(auth.authenticated).toBe(true)
   })
   it('401清会话且原样保留ApiError traceId', async () => {
     const auth = setup(async (config) =>
@@ -304,7 +316,11 @@ describe('持久化凭据恢复与会话竞态', () => {
   })
   it('未配置时不发登录请求，旧过期token不会再次发出', async () => {
     const transport = vi.fn(async (config: InternalAxiosRequestConfig) =>
-      response(config, result()),
+      response(
+        config,
+        config.url?.endsWith('/refresh') ? null : result(),
+        config.url?.endsWith('/refresh') ? 40100 : 0,
+      ),
     )
     const auth = setup(transport)
     auth.configure('')
@@ -316,7 +332,7 @@ describe('持久化凭据恢复与会话竞态', () => {
     await auth.login({ username: 'student_a', password: 'password1234' })
     vi.setSystemTime(Date.now() + 7200001)
     await expect(auth.loadMe()).rejects.toBeInstanceOf(ApiError)
-    expect(transport).toHaveBeenCalledTimes(1)
+    expect(transport).toHaveBeenCalledTimes(2)
     expect(auth.token).toBe('')
   })
   it('过期登录结果不接纳', async () => {
@@ -415,7 +431,13 @@ describe('流式请求认证边界', () => {
   })
   it('本地到期不得开始流式操作，强制改密错误同步身份状态', async () => {
     const auth = setup(async (config) =>
-      response(config, { ...result(), user: { ...user, mustChangePassword: false } }),
+      response(
+        config,
+        config.url?.endsWith('/refresh')
+          ? null
+          : { ...result(), user: { ...user, mustChangePassword: false } },
+        config.url?.endsWith('/refresh') ? 40100 : 0,
+      ),
     )
     await auth.login({ username: 'student_a', password: 'password' })
     await expect(
@@ -430,4 +452,49 @@ describe('流式请求认证边界', () => {
     expect(operation).not.toHaveBeenCalled()
     expect(auth.authenticated).toBe(false)
   })
+})
+
+it('记住登录仅持久化会话，不保存密码；并发续期合并且不更换身份作用域', async () => {
+  let refreshes = 0
+  const pending = deferred<ReturnType<typeof response>>()
+  let refreshConfig!: InternalAxiosRequestConfig
+  const auth = setup(async (config) => {
+    if (config.url?.endsWith('/refresh')) {
+      refreshes++
+      refreshConfig = config
+      return pending.promise
+    }
+    return response(config, result())
+  })
+  await auth.login({ username: 'student_a', password: 'private-password', remember: true })
+  expect(localStorage.getItem('quest.auth.session')).not.toContain('private-password')
+  expect(localStorage.getItem('quest.auth.session')).not.toContain('refreshToken')
+  const epoch = auth.sessionEpoch
+  const first = auth.refreshSession(),
+    second = auth.refreshSession()
+  await vi.waitFor(() => expect(refreshes).toBe(1))
+  pending.resolve(response(refreshConfig, result('rotated')))
+  await Promise.all([first, second])
+  expect(auth.token).toBe('rotated')
+  expect(auth.sessionEpoch).toBe(epoch)
+})
+
+it('过期的已保存会话只发续期请求，不能使用过期Bearer', async () => {
+  localStorage.setItem(
+    'quest.auth.session',
+    JSON.stringify({
+      baseURL: '/gateway',
+      accessToken: 'expired',
+      expiresAt: new Date(Date.now() - 1000).toISOString(),
+      remember: true,
+    }),
+  )
+  const auth = setup(async (config) => {
+    expect(config.url).toBe('/api/v1/auth/refresh')
+    expect(config.headers.has('Authorization')).toBe(false)
+    return response(config, result('fresh'))
+  })
+  await auth.restoreSession()
+  expect(auth.authenticated).toBe(true)
+  expect(auth.token).toBe('fresh')
 })

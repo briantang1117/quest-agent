@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import type { FormInstance } from '@arco-design/web-vue'
 import { IconSearch, IconRefresh, IconPlus } from '@arco-design/web-vue/es/icon'
@@ -13,6 +14,7 @@ import {
   type UserStatus,
 } from '@quest/shared'
 import { displayNameRule, passwordRule, usernameRule } from '../composables/form-rules'
+const router = useRouter()
 const auth = useAuthStore()
 const api = createUserApi(auth)
 const filters = reactive({ keyword: '', status: '' as UserStatus | '' })
@@ -244,9 +246,25 @@ onBeforeUnmount(() => {
             formatDate(record.lastLoginAt)
           }}</template></a-table-column
         >
-        <a-table-column title="操作" :width="190"
+        <a-table-column title="操作" :width="340"
           ><template #cell="{ record }"
-            ><a-space
+            ><a-space>
+              <a-button
+                type="text"
+                size="small"
+                @click="
+                  router.push({
+                    path: `/admin/users/${record.id}/controls`,
+                    query: { name: record.displayName },
+                  })
+                "
+                >授权与额度</a-button
+              >
+              <a-button
+                type="text"
+                size="small"
+                @click="router.push({ path: '/admin/statistics', query: { userId: record.id } })"
+                >用量</a-button
               ><a-button
                 data-test="toggle-status"
                 type="text"

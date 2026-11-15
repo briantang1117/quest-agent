@@ -18,8 +18,9 @@ import java.util.Set;
 /** JWT 只证明签名；业务身份、状态及权限每次都由数据库会话确认。 */
 final class SessionSecurityFilter extends OncePerRequestFilter {
     private final UserService users;
+    private final com.quest.api.admin.AdminControlService controls;
     private final ObjectMapper mapper;
-    SessionSecurityFilter(UserService users, ObjectMapper mapper) { this.users = users; this.mapper = mapper; }
+    SessionSecurityFilter(UserService users, ObjectMapper mapper,com.quest.api.admin.AdminControlService controls) { this.users = users; this.mapper = mapper; this.controls=controls; }
     @Override protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain) throws ServletException, IOException {
         var authentication = SecurityContextHolder.getContext().getAuthentication();
         if (authentication instanceof JwtAuthenticationToken jwt) {
@@ -29,15 +30,23 @@ final class SessionSecurityFilter extends OncePerRequestFilter {
                 var verified = new JwtAuthenticationToken(jwt.getToken(), List.of(new SimpleGrantedAuthority("ROLE_" + identity.user().role().toUpperCase(java.util.Locale.ROOT))));
                 SecurityContextHolder.getContext().setAuthentication(verified);
                 String path = request.getRequestURI().substring(request.getContextPath().length());
-                boolean selfService = ("GET".equals(request.getMethod()) && path.equals("/api/v1/auth/me"))
+                boolean selfService = ("GET".equals(request.getMethod()) && Set.of("/api/v1/auth/me","/api/v1/auth/features").contains(path))
                     || ("POST".equals(request.getMethod()) && (path.equals("/api/v1/auth/change-password") || path.equals("/api/v1/auth/logout")));
                 if (identity.user().mustChangePassword() && !selfService) throw new UserFailure(403, 40310, "Password change required");
                 boolean adminRoute = path.equals("/api/v1/admin") || path.startsWith("/api/v1/admin/");
                 if (adminRoute && !identity.user().role().equals("admin")) throw UserFailure.denied();
+                if(identity.user().role().equals("student")){
+                    if(path.startsWith("/api/v1/coach/"))controls.requireFeature(Long.parseLong(identity.user().id()),"coach");
+                    if(path.startsWith("/api/v1/study/syllab"))controls.requireFeature(Long.parseLong(identity.user().id()),"syllabus");
+                }
                 // AI 调用审计只读查询：Admin 可查，普通用户与内容管理端点不得复用此路径。
                 boolean aiAudit = (path.equals("/api/v1/admin/ai-calls") || path.matches("/api/v1/admin/ai-calls/[0-9]+")) && request.getMethod().equals("GET");
                 // Admin 白名单只开放账号元数据、本人认证与系统信息，其余未来内容端点也默认拒绝。
-                boolean userManagement = (path.equals("/api/v1/admin/users") && (request.getMethod().equals("GET") || request.getMethod().equals("POST")))
+                boolean userManagement = (path.matches("/api/v1/admin/users/[^/]+/usage/[^/]+/reconcile") && request.getMethod().equals("POST"))
+                    || (path.matches("/api/v1/admin/users/[^/]+/(controls|credits|force-logout)") && Set.of("GET","POST").contains(request.getMethod()))
+                    || (path.matches("/api/v1/admin/users/[^/]+/features/[^/]+") && request.getMethod().equals("PATCH"))
+                    || (Set.of("/api/v1/admin/events","/api/v1/admin/statistics").contains(path) && request.getMethod().equals("GET"))
+                    || (path.equals("/api/v1/admin/users") && (request.getMethod().equals("GET") || request.getMethod().equals("POST")))
                     || (path.matches("/api/v1/admin/users/[^/]+/status") && request.getMethod().equals("PATCH"))
                     || (path.matches("/api/v1/admin/users/[^/]+/reset-password") && request.getMethod().equals("POST"));
                 // 公共内容使用独立白名单，不扩大到历史题表/私人内容/练习端点。

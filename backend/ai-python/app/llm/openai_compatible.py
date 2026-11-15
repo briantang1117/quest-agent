@@ -6,6 +6,7 @@ from contextlib import aclosing
 
 import httpx
 
+from app.clients.model_meter import meter_call, meter_context
 from app.core.config import Settings
 from app.core.errors import ServiceError
 from app.llm.tool_stream import ToolStream
@@ -58,10 +59,17 @@ class OpenAICompatibleProvider:
             headers={"Authorization": f"Bearer {settings.llm_api_key.get_secret_value()}"},
         )
 
-    async def generate_json(
-        self, messages: list[dict[str, str]], *, background: bool = False
+    async def generate_json(self, messages, *, background=False):
+        body = {"messages": messages, "max_tokens": self._settings.llm_max_tokens}
+        async with meter_call(self._settings, body, self._settings.llm_model) as meter:
+            return await self._generate_json(messages, background=background, meter=meter)
+
+    async def _generate_json(
+        self, messages: list[dict[str, str]], *, background: bool = False, meter=None
     ) -> str:
         try:
+            if meter:
+                meter.sent = True
             response = await self._client.post(
                 f"{self._settings.llm_base_url}/chat/completions",
                 json={
@@ -73,13 +81,18 @@ class OpenAICompatibleProvider:
                 },
                 timeout=self._settings.background_timeout if background else None,
             )
+            if meter and response.status_code in {400, 401, 402, 403, 404, 413, 422, 429}:
+                meter.tokens = (0, 0)
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise ServiceError(504, 50401, "LLM upstream timed out") from exc
         except httpx.HTTPError as exc:
             raise ServiceError(502, 50201, "LLM upstream request failed") from exc
         try:
-            choice = response.json()["choices"][0]
+            payload = response.json()
+            if meter:
+                meter.usage(payload)
+            choice = payload["choices"][0]
             content = choice["message"]["content"]
             if choice.get("finish_reason") != "stop" or not isinstance(content, str) or not content:
                 raise ValueError("incomplete completion")
@@ -133,11 +146,24 @@ class OpenAICompatibleProvider:
             "max_tokens": max_tokens,
             "stream": True,
         }
+        if self._settings.ai_metering_enabled and meter_context.get() is not None:
+            body["stream_options"] = {"include_usage": True}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         return body
 
-    async def _stream_completion(
+    async def _stream_completion(self, messages, **options):
+        body = self._completion_body(
+            messages, json_mode=options["json_mode"], max_tokens=options["max_tokens"]
+        )
+        async with meter_call(self._settings, body, self._settings.llm_model) as meter:
+            async with aclosing(
+                self._unmetered_stream_completion(messages, meter=meter, **options)
+            ) as stream:
+                async for value in stream:
+                    yield value
+
+    async def _unmetered_stream_completion(
         self,
         messages,
         *,
@@ -146,14 +172,19 @@ class OpenAICompatibleProvider:
         content_limit=64 * 1024,
         request_timeout=None,
         max_wire_bytes=1024 * 1024,
+        meter=None,
     ):
         body = self._completion_body(messages, json_mode=json_mode, max_tokens=max_tokens)
         options = {} if request_timeout is None else {"timeout": request_timeout}
         stopped, nonempty, content_size = False, False, 0
         try:
+            if meter:
+                meter.sent = True
             async with self._client.stream(
                 "POST", f"{self._settings.llm_base_url}/chat/completions", json=body, **options
             ) as response:
+                if meter and response.status_code in {400, 401, 402, 403, 404, 413, 422, 429}:
+                    meter.tokens = (0, 0)
                 response.raise_for_status()
                 async for payload in _sse_payloads(response, max_wire_bytes=max_wire_bytes):
                     if payload == "[DONE]":
@@ -161,6 +192,8 @@ class OpenAICompatibleProvider:
                             raise ValueError("incomplete completion")
                         return
                     chunk = json.loads(payload)
+                    if meter:
+                        meter.usage(chunk)
                     if not isinstance(chunk, dict) or "error" in chunk:
                         raise ValueError("invalid upstream event")
                     choices = chunk.get("choices")
@@ -233,6 +266,19 @@ class OpenAICompatibleProvider:
             raise ServiceError(502, 50201, "LLM upstream returned an invalid stream") from exc
 
     async def stream_chat(self, messages, *, tools, tool_choice="auto"):
+        body = {
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": self._settings.explanation_max_tokens,
+        }
+        async with meter_call(self._settings, body, self._settings.llm_model) as meter:
+            async with aclosing(
+                self._stream_chat(messages, tools=tools, tool_choice=tool_choice, meter=meter)
+            ) as stream:
+                async for value in stream:
+                    yield value
+
+    async def _stream_chat(self, messages, *, tools, tool_choice="auto", meter=None):
         """独立工具流；旧正文流继续拒绝工具调用，失败均不自动重试。"""
         body = self._completion_body(
             messages, json_mode=False, max_tokens=self._settings.explanation_max_tokens
@@ -240,9 +286,13 @@ class OpenAICompatibleProvider:
         body.update(tools=tools, tool_choice=tool_choice)
         parser = ToolStream()
         try:
+            if meter:
+                meter.sent = True
             async with self._client.stream(
                 "POST", f"{self._settings.llm_base_url}/chat/completions", json=body
             ) as response:
+                if meter and response.status_code in {400, 401, 402, 403, 404, 413, 422, 429}:
+                    meter.tokens = (0, 0)
                 if response.status_code in {400, 422}:
                     # 仅接受明确的结构化“不支持工具”错误，不能把所有400当成可重试。
                     raw = bytearray()
@@ -261,6 +311,8 @@ class OpenAICompatibleProvider:
                         unsupported = False
                     if unsupported:
                         raise ServiceError(502, 50205, "LLM upstream does not support tools")
+                if meter and response.status_code in {400, 401, 402, 403, 404, 413, 422, 429}:
+                    meter.tokens = (0, 0)
                 response.raise_for_status()
                 async for payload in _sse_payloads(response):
                     if payload == "[DONE]":
@@ -268,7 +320,10 @@ class OpenAICompatibleProvider:
                         if final:
                             yield final
                         return
-                    event = parser.feed(json.loads(payload))
+                    chunk = json.loads(payload)
+                    if meter:
+                        meter.usage(chunk)
+                    event = parser.feed(chunk)
                     if event:
                         yield event
                 raise ValueError("missing DONE")

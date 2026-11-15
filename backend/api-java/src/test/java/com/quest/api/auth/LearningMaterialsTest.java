@@ -34,6 +34,7 @@ class LearningMaterialsTest {
             new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());
         }
         for(String name:List.of("admin","alice","bob"))db.update("INSERT INTO app_user(username,password_hash,display_name,account_type,must_change_password) VALUES (?,?,?,?,FALSE)",name,new BCryptPasswordEncoder().encode(PASSWORD),name,name.equals("admin")?"admin":"student");
+        db.update("INSERT INTO user_feature(user_id,feature,enabled) SELECT id,'materials',TRUE FROM app_user WHERE account_type='student'");
     }
     String token(String name)throws Exception{return json.readTree(mvc.perform(post("/api/v1/auth/login").contentType("application/json").content(json.writeValueAsString(Map.of("username",name,"password",PASSWORD)))).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data").path("accessToken").asText();}
     UUID source(String owner){UUID id=UUID.randomUUID();long user=db.queryForObject("SELECT id FROM app_user WHERE username=?",Long.class,owner);db.update("INSERT INTO student_coach_session(id,user_id,subject,title,state_json) VALUES (?,?,?,?,?)",id,user,"vocational_aptitude","知识对话","{\"messages\":[{\"id\":\"m1\",\"role\":\"user\",\"text\":\"财政政策和货币政策区别\"},{\"id\":\"m2\",\"role\":\"assistant\",\"text\":\"财政侧重收支，货币侧重货币与信贷。\"}]}");return id;}

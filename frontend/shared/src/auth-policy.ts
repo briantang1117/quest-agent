@@ -18,6 +18,9 @@ function allowed(user: UserProfile, path: string) {
         path === '/admin/syllabi' ||
         // 只放行精确路径：日志详情走接口，不额外开放 /admin/logs/* 子路由。
         path === '/admin/logs' ||
+        path === '/admin/events' ||
+        path === '/admin/statistics' ||
+        /^\/admin\/users\/[1-9][0-9]*\/controls$/.test(path) ||
         /^\/admin\/(?:questions|banks|syllabi)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
           path,
         )

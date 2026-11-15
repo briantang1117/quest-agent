@@ -6,7 +6,7 @@ export function useCacheScope() {
   return computed(() =>
     JSON.stringify([
       auth.baseURL,
-      auth.token,
+      auth.sessionEpoch || auth.token,
       auth.user?.id,
       auth.user?.role,
       auth.user?.status,

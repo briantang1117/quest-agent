@@ -23,6 +23,7 @@ export interface TokenResult {
 export interface LoginInput {
   username: string
   password: string
+  remember?: boolean
 }
 export interface ChangePasswordInput {
   currentPassword: string
@@ -32,9 +33,16 @@ export interface ChangePasswordInput {
 export { errorMessage } from './feedback'
 
 const SESSION_KEY = 'quest.auth.session'
-function readSession(): { accessToken: string; expiresAt: string; baseURL: string } | null {
+function readSession(): {
+  accessToken: string
+  expiresAt: string
+  baseURL: string
+  remember?: boolean
+} | null {
   try {
-    const value = JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null')
+    const value = JSON.parse(
+      sessionStorage.getItem(SESSION_KEY) ?? localStorage.getItem(SESSION_KEY) ?? 'null',
+    )
     return value &&
       typeof value.accessToken === 'string' &&
       typeof value.expiresAt === 'string' &&
@@ -48,6 +56,7 @@ function readSession(): { accessToken: string; expiresAt: string; baseURL: strin
 function removeSession() {
   try {
     localStorage.removeItem(SESSION_KEY)
+    sessionStorage.removeItem(SESSION_KEY)
   } catch {
     /* 存储被浏览器禁用时仍可使用内存会话。 */
   }
@@ -55,11 +64,15 @@ function removeSession() {
 // 只持久化凭据/到期时间/服务地址；角色和用户资料必须重新向服务端获取。
 export const useAuthStore = defineStore('auth', () => {
   const token = ref('')
+  const sessionEpoch = ref(0)
   const user = ref<UserProfile | null>(null)
   const expiresAt = ref('')
   const baseURL = ref('')
   const configError = ref('未配置 VITE_API_BASE_URL，不会发送请求')
   const sessionNotice = ref('')
+  const features = ref<Record<string, boolean>>({})
+  let remember = false
+  let refreshPending: Promise<void> | undefined
   const configured = computed(() => Boolean(baseURL.value) && !configError.value)
   const authenticated = computed(() =>
     Boolean(token.value && user.value && user.value.status === 'active'),
@@ -71,10 +84,12 @@ export const useAuthStore = defineStore('auth', () => {
   function clearSession(notice = '', discardStored = true) {
     if (discardStored) removeSession()
     revision++
+    sessionEpoch.value++
     clearTimeout(timer)
     token.value = ''
     user.value = null
     expiresAt.value = ''
+    features.value = {}
     sessionNotice.value = notice
   }
   function configure(value: string | undefined) {
@@ -92,10 +107,15 @@ export const useAuthStore = defineStore('auth', () => {
   function assertCurrent(version: number) {
     if (version !== revision) throw new ApiError('会话已变更，请重新操作')
   }
-  function accept(data: TokenResult, version: number) {
+  function accept(data: TokenResult, version: number, rotation = false) {
     assertCurrent(version)
-    const remaining = Date.parse(data.expiresAt) - Date.now()
+    if (rotation && user.value && data?.user?.id !== user.value.id) {
+      clearSession('账号已在其他页面切换，请重新登录')
+      throw new ApiError('登录身份已变更', 40100)
+    }
+    const remaining = Date.parse(data?.expiresAt ?? '') - Date.now()
     if (
+      !data?.user ||
       !data.accessToken ||
       !Number.isFinite(remaining) ||
       remaining <= 0 ||
@@ -107,27 +127,65 @@ export const useAuthStore = defineStore('auth', () => {
       throw new ApiError('登录会话无效，请重新登录')
     }
     clearTimeout(timer)
-    revision++
+    if (!rotation) {
+      revision++
+      sessionEpoch.value++
+    }
     token.value = data.accessToken
     user.value = data.user
     expiresAt.value = data.expiresAt
     sessionNotice.value = ''
     try {
-      localStorage.setItem(
+      ;(remember ? localStorage : sessionStorage).setItem(
         SESSION_KEY,
         JSON.stringify({
           accessToken: data.accessToken,
           expiresAt: data.expiresAt,
           baseURL: baseURL.value,
+          remember,
         }),
       )
     } catch {
       sessionNotice.value = '浏览器未允许保存登录状态，关闭页面后需重新登录'
     }
     timer = setTimeout(
-      () => clearSession('登录已过期，请重新登录'),
-      Math.min(remaining, 2147483647),
+      () => {
+        void refreshSession().catch(() => {
+          if (Date.parse(expiresAt.value) <= Date.now()) clearSession('登录已失效，请重新登录')
+        })
+      },
+      Math.min(Math.max(1000, remaining - 60000), 2147483647),
     )
+  }
+  async function refreshSession() {
+    if (refreshPending) return refreshPending
+    const version = revision
+    const run = async () => {
+      assertCurrent(version)
+      const data = await createApiClient({ baseURL: baseURL.value }).post<TokenResult>(
+        '/api/v1/auth/refresh',
+        {},
+        { withCredentials: true, headers: { 'X-Refresh-Intent': '1' }, silent: true },
+      )
+      accept(data, version, true)
+    }
+    refreshPending = (async () => {
+      try {
+        if (typeof navigator !== 'undefined' && navigator.locks)
+          await navigator.locks.request('quest-auth-refresh', run)
+        else await run()
+      } catch (error) {
+        if (version === revision && error instanceof ApiError && error.status === 401)
+          clearSession('登录已失效，请重新登录')
+        throw error
+      } finally {
+        refreshPending = undefined
+      }
+    })()
+    return refreshPending
+  }
+  async function ensureAccess() {
+    if (Date.parse(expiresAt.value) - Date.now() < 60000) await refreshSession()
   }
   async function restoreSession() {
     if (authenticated.value) return
@@ -139,25 +197,27 @@ export const useAuthStore = defineStore('auth', () => {
       !saved.accessToken ||
       saved.baseURL !== baseURL.value ||
       !configured.value ||
-      !Number.isFinite(Date.parse(saved.expiresAt)) ||
-      Date.parse(saved.expiresAt) <= Date.now()
+      !Number.isFinite(Date.parse(saved.expiresAt))
     ) {
       removeSession()
       return
     }
+    remember = saved.remember === true
     restorePending = (async () => {
       try {
-        const profile = await createApiClient({
-          baseURL: baseURL.value,
-          getToken: () => saved.accessToken,
-        }).get<UserProfile>('/api/v1/auth/me')
-        accept(
-          { accessToken: saved.accessToken, expiresAt: saved.expiresAt, user: profile },
-          version,
-        )
+        if (Date.parse(saved.expiresAt) - Date.now() < 60000) await refreshSession()
+        else {
+          const profile = await createApiClient({
+            baseURL: baseURL.value,
+            getToken: () => saved.accessToken,
+          }).get<UserProfile>('/api/v1/auth/me')
+          accept(
+            { accessToken: saved.accessToken, expiresAt: saved.expiresAt, user: profile },
+            version,
+          )
+        }
       } catch (error) {
         if (version !== revision) return
-        // 非401网络故障暂留凭据供稍后重试，但不接纳缓存身份或放行业务页。
         const invalid = error instanceof ApiError && (error.status === 401 || error.code === 40100)
         clearSession(invalid ? '登录已失效，请重新登录' : '暂时无法验证登录状态，请重试', invalid)
       } finally {
@@ -172,10 +232,8 @@ export const useAuthStore = defineStore('auth', () => {
       if (!configured.value) throw new ApiError(configError.value)
       // 已主动退出/没有身份时拒绝请求，但不将后续组件请求误标为会话过期。
       if (!authenticated.value) throw new ApiError('请先登录', 40100)
-      if (Date.parse(expiresAt.value) <= Date.now()) {
-        clearSession('登录已过期，请重新登录')
-        throw new ApiError('登录已失效，请重新登录', 40100)
-      }
+      if (Date.parse(expiresAt.value) - Date.now() < 60000) await ensureAccess()
+      assertCurrent(version)
       const credential = token.value
       const client = createApiClient({ baseURL: baseURL.value, getToken: () => credential })
       const data = await client.request<T>(config)
@@ -203,10 +261,8 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       if (!configured.value) throw new ApiError(configError.value)
       if (!authenticated.value) throw new ApiError('请先登录', 40100)
-      if (Date.parse(expiresAt.value) <= Date.now()) {
-        clearSession('登录已过期，请重新登录')
-        throw new ApiError('登录已失效，请重新登录', 40100)
-      }
+      if (Date.parse(expiresAt.value) - Date.now() < 60000) await ensureAccess()
+      assertCurrent(version)
       const result = await operation({
         token: token.value,
         baseURL: baseURL.value,
@@ -226,11 +282,12 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(input: LoginInput, options: Pick<ApiRequestConfig, 'silent'> = {}) {
     clearSession()
     if (!configured.value) throw new ApiError(configError.value)
+    remember = input.remember === true
     const version = revision
     const data = await createApiClient({ baseURL: baseURL.value }).post<TokenResult>(
       '/api/v1/auth/login',
       input,
-      options,
+      { ...options, withCredentials: true },
     )
     accept(data, version)
   }
@@ -258,23 +315,30 @@ export const useAuthStore = defineStore('auth', () => {
       method: 'POST',
       url: '/api/v1/auth/change-password',
       data: input,
+      withCredentials: true,
       ...options,
     })
     accept(data, version)
   }
   async function logout() {
     const credential = token.value
+    const stillValid = Date.parse(expiresAt.value) > Date.now()
     const url = baseURL.value
     clearSession()
     if (credential && url)
-      await createApiClient({ baseURL: url, getToken: () => credential }).post<null>(
+      await createApiClient({
+        baseURL: url,
+        ...(stillValid ? { getToken: () => credential } : {}),
+      }).post<null>(
         '/api/v1/auth/logout',
         {},
+        { withCredentials: true, headers: { 'X-Refresh-Intent': '1' } },
       )
   }
   onScopeDispose(() => clearTimeout(timer))
   return {
     token,
+    sessionEpoch,
     user,
     expiresAt,
     baseURL,
@@ -282,6 +346,14 @@ export const useAuthStore = defineStore('auth', () => {
     configured,
     authenticated,
     sessionNotice,
+    features,
+    refreshSession,
+    loadFeatures: async () => {
+      features.value = await request<Record<string, boolean>>({
+        method: 'GET',
+        url: '/api/v1/auth/features',
+      })
+    },
     configure,
     clearSession,
     login,

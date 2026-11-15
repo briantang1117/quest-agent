@@ -66,7 +66,7 @@ def test_route_returns_validated_envelope_with_one_short_intent_call(action, key
         {"action": "publish", "keys": [], "reply": "SECRET_OUTPUT"},
         {"action": "answer", "keys": [], "reply": "收到"},
         {"action": "chat", "keys": ["B"], "reply": "收到"},
-        {"action": "chat", "keys": [], "reply": "长" * 201},
+        {"action": "clarify", "keys": [], "reply": "长" * 201},
         {"action": "chat", "keys": [], "reply": "  "},
     ],
 )
@@ -80,13 +80,29 @@ def test_invalid_route_output_is_safe_and_never_retried(result):
 
 
 def test_route_validation_logs_only_safe_error_location(caplog):
-    provider = RouteProvider({"action": "chat", "keys": [], "reply": "SECRET_OUTPUT" * 30})
+    provider = RouteProvider({"action": "clarify", "keys": [], "reply": "SECRET_OUTPUT" * 30})
     with TestClient(create_app(settings(), provider=provider)) as client:
         response = send(client)
     assert response.status_code == 502
     assert "stage=coach_route" in caplog.text
     assert "reply:string_too_long" in caplog.text
     assert "SECRET_OUTPUT" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "action,keys", [("chat", []), ("next", []), ("answer", ["B"]), ("material", [])]
+)
+def test_unused_long_route_reply_is_discarded_without_retry(action, keys, caplog):
+    provider = RouteProvider({"action": action, "keys": keys, "reply": "SECRET_EXPLANATION" * 100})
+    with TestClient(create_app(settings(), provider=provider)) as client:
+        response = send(
+            client, message="把本次对话总结成文档" if action == "material" else "继续讨论"
+        )
+    assert response.status_code == 200
+    assert response.json()["data"]["action"] == action
+    assert len(response.json()["data"]["reply"]) <= 200
+    assert "SECRET_EXPLANATION" not in response.text + caplog.text
+    assert len(provider.messages) == 1
 
 
 def test_route_timeout_is_not_retried():

@@ -13,6 +13,7 @@ SECRET = "test-hmac-secret-at-least-32-characters"
 @pytest.fixture(autouse=True)
 def isolated_environment(monkeypatch):
     monkeypatch.setenv("COACH_CHECKPOINT_PATH", ":memory:")
+    monkeypatch.setenv("AI_METERING_ENABLED", "false")
     for name in (
         "APP_ENV",
         "COACH_TOOLS_ENABLED",

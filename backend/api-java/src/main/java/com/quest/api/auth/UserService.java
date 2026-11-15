@@ -28,6 +28,13 @@ public class UserService {
     private final ObjectProvider<JdbcTemplate> jdbcProvider;
     private final ObjectProvider<PlatformTransactionManager> transactionProvider;
     private final String mode, secret, issuer, audience;
+    @Value("${quest.security.access-seconds:900}") private long accessSeconds=900;
+    @org.springframework.beans.factory.annotation.Autowired private org.springframework.context.ApplicationEventPublisher events;
+    public record SessionsRevoked(long userId){}
+    private final java.security.SecureRandom random=new java.security.SecureRandom();
+    public record Issued(TokenResult token,String refresh,Instant refreshExpires,boolean remember) {
+        @Override public String toString(){return "Issued[redacted]";}
+    }
     private final BCryptPasswordEncoder bcrypt = new BCryptPasswordEncoder(12);
     private final String dummyHash = bcrypt.encode(UUID.randomUUID().toString());
     public UserService(ObjectProvider<JdbcTemplate> jdbcProvider, ObjectProvider<PlatformTransactionManager> transactionProvider,
@@ -64,12 +71,15 @@ public class UserService {
         return users.isEmpty() ? null : users.getFirst();
     }
     public TokenResult login(String username, String password, String trace) {
+        return loginSession(username,password,trace,false).token();
+    }
+    public Issued loginSession(String username,String password,String trace,boolean remember){
         return transaction(() -> {
             StoredUser user = find("username", username, true);
             boolean matches = matches(password, user == null ? dummyHash : user.hash);
             if (user == null || !matches || !"active".equals(user.profile.status())) throw UserFailure.invalid();
             db().update("UPDATE app_user SET last_login_at=?, updated_at=? WHERE id=?", now(), now(), Long.parseLong(user.profile.id()));
-            return issue(find("id", Long.parseLong(user.profile.id()), false).profile);
+            return issue(find("id", Long.parseLong(user.profile.id()), false).profile,remember);
         });
     }
     private boolean matches(String password, String hash) {
@@ -79,19 +89,44 @@ public class UserService {
         }
         return bcrypt.matches(password, hash);
     }
-    private TokenResult issue(Profile user) {
-        if (secret.getBytes(StandardCharsets.UTF_8).length < 32) throw UserFailure.unavailable();
-        Instant issued = Instant.now().truncatedTo(ChronoUnit.SECONDS), expires = issued.plusSeconds(7200);
-        UUID sid = UUID.randomUUID();
-        db().update("INSERT INTO auth_session(id,user_id,created_at,expires_at) VALUES (?,?,?,?)", sid,
-            Long.parseLong(user.id()), OffsetDateTime.ofInstant(issued, java.time.ZoneOffset.UTC), OffsetDateTime.ofInstant(expires, java.time.ZoneOffset.UTC));
-        try {
-            var claims = new JWTClaimsSet.Builder().subject(user.id()).issuer(issuer).audience(audience)
-                .issueTime(Date.from(issued)).expirationTime(Date.from(expires)).claim("sid", sid.toString()).build();
-            var jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
-            jwt.sign(new MACSigner(secret.getBytes(StandardCharsets.UTF_8)));
-            return new TokenResult(jwt.serialize(), expires, user);
-        } catch (JOSEException ex) { throw UserFailure.unavailable(); }
+    private Issued issue(Profile user,boolean remember) {
+        Instant issued=Instant.now().truncatedTo(ChronoUnit.SECONDS);
+        Instant end=issued.plusSeconds(remember?30*86400:12*3600);
+        UUID sid=UUID.randomUUID();
+        db().update("INSERT INTO auth_session(id,user_id,created_at,expires_at) VALUES (?,?,?,?)",sid,Long.parseLong(user.id()),OffsetDateTime.ofInstant(issued,java.time.ZoneOffset.UTC),OffsetDateTime.ofInstant(end,java.time.ZoneOffset.UTC));
+        String refresh=newRefresh();
+        db().update("INSERT INTO auth_refresh(session_id,token_hash,expires_at,remember) VALUES (?,?,?,?)",sid,refreshHash(refresh),OffsetDateTime.ofInstant(end,java.time.ZoneOffset.UTC),remember);
+        return new Issued(sign(user,sid.toString()),refresh,end,remember);
+    }
+    private TokenResult sign(Profile user,String sid){
+        if(secret.getBytes(StandardCharsets.UTF_8).length<32)throw UserFailure.unavailable();
+        Instant issued=Instant.now().truncatedTo(ChronoUnit.SECONDS),expires=issued.plusSeconds(accessSeconds);
+        try{
+            var claims=new JWTClaimsSet.Builder().subject(user.id()).issuer(issuer).audience(audience).issueTime(Date.from(issued)).expirationTime(Date.from(expires)).claim("sid",sid).build();
+            var jwt=new SignedJWT(new JWSHeader(JWSAlgorithm.HS256),claims);jwt.sign(new MACSigner(secret.getBytes(StandardCharsets.UTF_8)));
+            return new TokenResult(jwt.serialize(),expires,user);
+        }catch(JOSEException ex){throw UserFailure.unavailable();}
+    }
+    private String newRefresh(){byte[] raw=new byte[32];random.nextBytes(raw);return Base64.getUrlEncoder().withoutPadding().encodeToString(raw);}
+    private static String refreshHash(String value){
+        try{return HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));}
+        catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
+    }
+    private record RefreshState(Instant expires,boolean remember){}
+    public Issued refresh(String value){
+        if(value==null||!value.matches("[A-Za-z0-9_-]{43}"))throw UserFailure.invalid();
+        return transaction(()->{
+            // 与退出/改密/强制下线统一先锁用户，再锁续期行。
+            var matches=db().queryForList("SELECT s.user_id,r.session_id FROM auth_refresh r JOIN auth_session s ON s.id=r.session_id WHERE r.token_hash=?",refreshHash(value));
+            if(matches.size()!=1)throw UserFailure.invalid();
+            var row=matches.getFirst();String id=row.get("user_id").toString(),sid=row.get("session_id").toString();
+            var live=requireSession(id,sid,true);
+            var rows=db().query("SELECT expires_at,remember FROM auth_refresh WHERE session_id=? AND token_hash=? AND expires_at>? FOR UPDATE",(rs,n)->new RefreshState(rs.getObject("expires_at",OffsetDateTime.class).toInstant(),rs.getBoolean("remember")),UUID.fromString(sid),refreshHash(value),now());
+            if(rows.size()!=1)throw UserFailure.invalid();
+            var current=rows.getFirst();String next=newRefresh();
+            db().update("UPDATE auth_refresh SET token_hash=? WHERE session_id=?",refreshHash(next),UUID.fromString(sid));
+            return new Issued(sign(live.user(),sid),next,current.expires(),current.remember());
+        });
     }
     public SessionIdentity session(String subject, String sid) {
         try { return requireSession(subject, sid, false); }
@@ -114,7 +149,16 @@ public class UserService {
             return null;
         });
     }
+    public Profile logoutRefresh(String value){
+        if(value==null||!value.matches("[A-Za-z0-9_-]{43}"))return null;
+        return transaction(()->{var rows=db().queryForList("SELECT s.user_id,s.id FROM auth_refresh r JOIN auth_session s ON s.id=r.session_id WHERE r.token_hash=?",refreshHash(value));
+            if(rows.size()!=1)return null;var row=rows.getFirst();var user=find("id",((Number)row.get("user_id")).longValue(),true);
+            db().update("UPDATE auth_session SET revoked_at=? WHERE id=?",now(),row.get("id"));return user==null?null:user.profile;});
+    }
     public TokenResult changePassword(SessionIdentity identity, String current, String next, String trace) {
+        return changePasswordSession(identity,current,next,trace).token();
+    }
+    public Issued changePasswordSession(SessionIdentity identity,String current,String next,String trace){
         password(next);
         return transaction(() -> {
             var live = requireSession(identity.user().id(), identity.sessionId(), true);
@@ -123,10 +167,14 @@ public class UserService {
             if (matches(next, user.hash)) throw new IllegalArgumentException("New password must differ");
             db().update("UPDATE app_user SET password_hash=?, must_change_password=FALSE, updated_at=? WHERE id=?", bcrypt.encode(next), now(), Long.parseLong(user.profile.id()));
             revoke(user.profile.id()); audit(user.profile.id(), "user.change_password", user.profile.id(), trace);
-            return issue(find("id", Long.parseLong(user.profile.id()), false).profile);
+            return issue(find("id", Long.parseLong(user.profile.id()), false).profile,false);
         });
     }
-    private void revoke(String id) { db().update("UPDATE auth_session SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", now(), Long.parseLong(id)); }
+    private void revoke(String id) { db().update("UPDATE auth_session SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", now(), Long.parseLong(id));
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization(){@Override public void afterCommit(){events.publishEvent(new SessionsRevoked(Long.parseLong(id)));}});
+    }
+    public void requireAdmin(SessionIdentity identity){transaction(()->{admin(identity);return null;});}
+    public void forceLogout(SessionIdentity identity,String id,String trace){transaction(()->{admin(identity);student(numericId(id));revoke(id);audit(identity.user().id(),"user.force_logout",id,trace);return null;});}
     private void admin(SessionIdentity identity) {
         var current = requireSession(identity.user().id(), identity.sessionId(), true);
         if (current.user().mustChangePassword()) throw new UserFailure(403, 40310, "Password change required");

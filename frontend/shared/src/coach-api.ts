@@ -26,6 +26,7 @@ export interface CoachSuggestion {
   action: 'next' | 'chat'
   label: string
   text?: string
+  required_feature?: 'materials' | 'search' | 'syllabus' | 'coach'
 }
 export interface CoachSource {
   tool: 'search_web' | 'fetch_page'
@@ -50,6 +51,7 @@ export interface CoachMessage {
   sources?: CoachSource[]
 }
 export interface CoachSession {
+  capabilities?: Partial<Record<'materials' | 'search' | 'syllabus' | 'coach', boolean>>
   id: string
   subject: StudySubject
   title: string

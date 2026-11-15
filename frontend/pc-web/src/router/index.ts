@@ -93,6 +93,24 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
             meta: { title: '用户管理', pageDeepth: 1 },
           },
           {
+            path: 'users/:id/controls',
+            name: 'AdminUserControlsView',
+            component: () => import('../views/AdminUserControlsView.vue'),
+            meta: { title: '用户授权与额度', pageDeepth: 2 },
+          },
+          {
+            path: 'events',
+            name: 'AdminEventsView',
+            component: () => import('../views/AdminEventsView.vue'),
+            meta: { title: '登录与操作日志', pageDeepth: 1 },
+          },
+          {
+            path: 'statistics',
+            name: 'AdminStatisticsView',
+            component: () => import('../views/AdminStatisticsView.vue'),
+            meta: { title: '接口与AI使用统计', pageDeepth: 1 },
+          },
+          {
             path: 'logs',
             name: 'AdminAiLogsView',
             component: () => import('../views/AdminAiLogsView.vue'),
@@ -129,7 +147,8 @@ export function createAppRouter(history: RouterHistory, pinia?: Pinia) {
     return authRedirect(auth.user, to.path) ?? true
   })
   router.afterEach((to) => {
-    document.title = `${String(to.meta.title ?? '工作台')} · 知序`
+    if (typeof document !== 'undefined')
+      document.title = `${String(to.meta.title ?? '工作台')} · 知序`
   })
   // 到期、401与服务端强制改密立即同步到当前页面，不等下一次点击路由。
   router.isReady().then(() => {

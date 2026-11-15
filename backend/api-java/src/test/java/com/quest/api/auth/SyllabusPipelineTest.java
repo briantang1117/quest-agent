@@ -27,7 +27,7 @@ class SyllabusPipelineTest {
         var ds=new org.springframework.jdbc.datasource.SingleConnectionDataSource("jdbc:h2:mem:"+UUID.randomUUID()+";MODE=PostgreSQL;DB_CLOSE_DELAY=-1","sa","",true);
         db=new JdbcTemplate(ds); var manager=new DataSourceTransactionManager(ds); tx=new TransactionTemplate(manager);
         db.execute("CREATE ROLE quest_app");db.execute("CREATE ROLE quest_ai");
-        db.execute("CREATE TABLE syllabus_version(id UUID PRIMARY KEY,title VARCHAR(200),exam_type VARCHAR(40),exam_year INT,status VARCHAR(16),revision INT,sections_json TEXT,warnings_json TEXT,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
+        db.execute("CREATE TABLE syllabus_version(id UUID PRIMARY KEY,created_by BIGINT DEFAULT 1,title VARCHAR(200),exam_type VARCHAR(40),exam_year INT,status VARCHAR(16),revision INT,sections_json TEXT,warnings_json TEXT,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
         String sql=Files.readString(Path.of("src/main/resources/db/migration/V11__syllabus_pipeline.sql")).replace("embedding vector", "embedding TEXT").replace("AND vector_dims(embedding)=embedding_dimensions", "");
         for(String part:sql.split(";"))if(!part.isBlank())db.execute(part);
         var beans=new StaticListableBeanFactory();beans.addBean("jdbc",db);beans.addBean("tx",manager);

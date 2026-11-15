@@ -1301,3 +1301,20 @@ it('未选科目时引导个人中心，不创建假会话', async () => {
   expect(wrapper.text()).toContain('选择学习科目')
   expect(request.mock.calls.some(([c]) => c.method === 'POST')).toBe(false)
 })
+
+it('功能未开放时隐藏文件整理入口和受限建议，保留聊天内对比表', async () => {
+  const current = chatSession()
+  current.capabilities = { materials: false, search: false, coach: true }
+  current.messages.at(-1)!.suggestions = [
+    { action: 'chat', label: '梳理常考提法', text: '梳理常考提法，做成对比表。' },
+    { action: 'chat', label: '导出学习文档', text: '生成文档', required_feature: 'materials' },
+    { action: 'chat', label: '联网核对来源', text: '联网查证', required_feature: 'search' },
+  ]
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : current,
+  )
+  expect(wrapper.find('[data-test="create-material"]').exists()).toBe(false)
+  expect(wrapper.text()).toContain('梳理常考提法')
+  expect(wrapper.text()).not.toContain('导出学习文档')
+  expect(wrapper.text()).not.toContain('联网核对来源')
+})

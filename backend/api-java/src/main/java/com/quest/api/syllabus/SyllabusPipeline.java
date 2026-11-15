@@ -161,7 +161,7 @@ public class SyllabusPipeline {
     }
     private JsonNode call(Job job,Supplier<JsonNode> action){
         tx(()->{guardVersion(version(job.version(),true),job);guardLease(job);db().update("UPDATE syllabus_job SET in_flight=TRUE WHERE id=? AND lease_token=?",job.id(),job.token());return null;});
-        long remaining=java.time.Duration.between(OffsetDateTime.now(java.time.ZoneOffset.UTC),job.until()).toMillis();if(remaining<=0)throw new IllegalStateException();Future<JsonNode> result=calls.submit(action::get);
+        long remaining=java.time.Duration.between(OffsetDateTime.now(java.time.ZoneOffset.UTC),job.until()).toMillis();if(remaining<=0)throw new IllegalStateException();Long actor=db().queryForObject("SELECT created_by FROM syllabus_version WHERE id=?",Long.class,job.version());Future<JsonNode> result=calls.submit(()->com.quest.api.publicbank.PublicAiClient.asActor(new com.quest.api.publicbank.PublicAiClient.Caller(actor,job.id().toString()),action));
         try{JsonNode value=result.get(Math.min(110_000,remaining),TimeUnit.MILLISECONDS);tx(()->{guardLease(job);db().update("UPDATE syllabus_job SET in_flight=FALSE WHERE id=? AND lease_token=?",job.id(),job.token());return null;});return value;}
         catch(InterruptedException e){result.cancel(true);Thread.currentThread().interrupt();throw new IllegalStateException();}
         // 保留 cause，否则上游超时/配置错误的真实原因无法写进失败状态。

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     # SSE包装和推理元数据计入流量，独立于最终正文预算。
     material_max_stream_bytes: int = Field(default=16 * 1024 * 1024, gt=0, le=64 * 1024 * 1024)
     material_llm_timeout_seconds: float = Field(default=600, gt=0, le=600)
+    ai_metering_enabled: bool = False
     material_pdf_font_path: str = ""
     material_pdf_bold_font_path: str = ""
 

@@ -9,7 +9,7 @@ const requiredPassword = { required: true, message: '请输入密码' }
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
-const form = reactive({ username: '', password: '' })
+const form = reactive({ username: '', password: '', remember: false })
 const busy = ref(false)
 let feedback: ReturnType<typeof Message.error> | undefined
 onBeforeUnmount(() => feedback?.close())
@@ -51,6 +51,7 @@ async function submit() {
             v-model="form.username"
             :input-attrs="{
               id: 'username',
+              name: 'username',
               autocomplete: 'username',
               autocapitalize: 'none',
               spellcheck: false,
@@ -60,9 +61,12 @@ async function submit() {
         <a-form-item field="password" label="密码" :rules="requiredPassword"
           ><a-input-password
             v-model="form.password"
-            :input-attrs="{ id: 'password', autocomplete: 'current-password' }"
+            :input-attrs="{ id: 'password', name: 'password', autocomplete: 'current-password' }"
             placeholder="输入密码"
         /></a-form-item>
+        <a-form-item hide-label
+          ><a-checkbox v-model="form.remember">记住登录状态（30天）</a-checkbox></a-form-item
+        >
         <a-button
           long
           type="primary"

@@ -24,10 +24,12 @@ public class LearningMaterialService {
     private final ObjectProvider<PlatformTransactionManager> managers;
     private final UserService users;
     private final ObjectMapper json;
+    @org.springframework.beans.factory.annotation.Autowired private com.quest.api.admin.AdminControlService controls;
     private final boolean enabled;
     private final int maxChars,maxBytes;
     public LearningMaterialService(ObjectProvider<JdbcTemplate> jdbc,ObjectProvider<PlatformTransactionManager> managers,UserService users,ObjectMapper json,
         @Value("${quest.materials.enabled:false}") boolean enabled,@Value("${quest.materials.max-input-chars:1000000}")int maxChars,@Value("${quest.materials.max-snapshot-bytes:8388608}")int maxBytes){this.jdbc=jdbc;this.managers=managers;this.users=users;this.json=json;this.enabled=enabled;this.maxChars=maxChars;this.maxBytes=maxBytes;}
+    public boolean generationEnabled(){return enabled;}
     void ensureEnabled(){if(!enabled)throw new UserFailure(503,50341,"学习资料生成尚未启用");}
     JdbcTemplate db(){var value=jdbc.getIfAvailable();if(value==null)throw new UserFailure(503,50340,"学习资料存储暂不可用");return value;}
     <T>T transaction(Supplier<T> work){var manager=managers.getIfAvailable();if(manager==null)throw new UserFailure(503,50340,"学习资料存储暂不可用");return new TransactionTemplate(manager).execute(s->work.get());}
@@ -38,7 +40,7 @@ public class LearningMaterialService {
         if(!enabled)throw new UserFailure(503,50341,"学习资料生成尚未启用");
         UUID source=UUID.fromString(session);String instructions=input.instructions()==null?"":input.instructions().strip();
         return transaction(()->{
-            long user=owner(identity);
+            long user=owner(identity);controls.requireFeature(user,"materials");
             String hash=hash(source+"\n"+instructions);
             var replay=replay(user,input.requestId(),hash);if(replay!=null)return replay;
             // 与重试保持来源→资料的锁顺序；等待来源锁后必须再次检查幂等键。
@@ -88,7 +90,7 @@ public class LearningMaterialService {
     }
     public Map<String,Object> retry(SessionIdentity identity,String material,UUID request){
         if(request==null)throw new IllegalArgumentException();if(!enabled)throw new UserFailure(503,50341,"学习资料生成尚未启用");UUID id=UUID.fromString(material);
-        return transaction(()->{long user=owner(identity);String hash=hash("retry\n"+id);
+        return transaction(()->{long user=owner(identity);controls.requireFeature(user,"materials");String hash=hash("retry\n"+id);
             var replay=replay(user,request,hash);if(replay!=null)return replay;
             var rows=db().queryForList("SELECT session_id FROM learning_material WHERE id=? AND user_id=?",id,user);if(rows.isEmpty())throw missing();UUID source=(UUID)rows.getFirst().get("session_id");
             db().queryForList("SELECT id FROM student_coach_session WHERE id=? AND user_id=? FOR UPDATE",source,user);

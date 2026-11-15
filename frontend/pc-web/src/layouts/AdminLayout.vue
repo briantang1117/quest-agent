@@ -30,7 +30,9 @@ const contentSection = computed(
     syllabusSection.value,
 )
 // 系统日志挂在"系统管理"下，与用户管理同级，但不复用用户管理的选中态。
-const systemSection = computed(() => route.path.startsWith('/admin/logs'))
+const systemSection = computed(() =>
+  ['/admin/logs', '/admin/events', '/admin/statistics'].some((path) => route.path.startsWith(path)),
+)
 const breadcrumbs = computed(() => {
   if (syllabusSection.value) {
     const items: { label: string; to?: string }[] = [
@@ -41,7 +43,8 @@ const breadcrumbs = computed(() => {
     return items
   }
   // 系统日志与用户管理并列，同属系统管理一级。
-  if (systemSection.value) return [{ label: '系统管理' }, { label: '系统日志' }]
+  if (systemSection.value)
+    return [{ label: '系统管理' }, { label: String(route.meta.title || '系统日志') }]
   if (!contentSection.value)
     return [{ label: '系统管理' }, { label: '用户管理' }, { label: '用户列表' }]
   const items: { label: string; to?: string }[] = [
@@ -162,7 +165,11 @@ async function logout() {
             : contentSection
               ? 'banks'
               : systemSection
-                ? 'logs'
+                ? route.path === '/admin/statistics'
+                  ? 'statistics'
+                  : route.path === '/admin/events'
+                    ? 'events'
+                    : 'logs'
                 : 'users',
         ]"
         :auto-open-selected="true"
@@ -190,6 +197,12 @@ async function logout() {
           </a-sub-menu>
           <a-sub-menu key="system-logs"
             ><template #icon><IconFile /></template><template #title>系统日志</template>
+            <a-menu-item key="events" @click="router.push('/admin/events')"
+              >登录与操作日志</a-menu-item
+            >
+            <a-menu-item key="statistics" @click="router.push('/admin/statistics')"
+              >使用统计</a-menu-item
+            >
             <a-menu-item key="logs" @click="router.push('/admin/logs')">AI 调用记录</a-menu-item>
           </a-sub-menu>
         </template>

@@ -3,6 +3,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from app.clients.model_meter import meter_call
 from app.core.config import Settings
 from app.core.errors import ServiceError
 
@@ -63,6 +64,19 @@ class ToolProvider:
         return ServiceError(502, 50202, f"{self._capability}上游返回无效或不完整数据")
 
     async def _post(self, path: str, body: dict, *, max_response_bytes: int | None = None) -> dict:
+        async with meter_call(self._settings, body, self._model, self._capability) as meter:
+            if meter:
+                meter.sent = True
+            payload = await self._raw_post(
+                path, body, max_response_bytes=max_response_bytes, meter=meter
+            )
+            if meter:
+                meter.usage(payload)
+            return payload
+
+    async def _raw_post(
+        self, path: str, body: dict, *, max_response_bytes: int | None = None, meter=None
+    ) -> dict:
         try:
             if max_response_bytes is None:
                 response = await self._client.post(f"{self._base_url}{path}", json=body)
@@ -90,6 +104,8 @@ class ToolProvider:
         except httpx.HTTPError:
             raise ServiceError(502, 50201, f"{self._capability}上游网络请求失败") from None
         status = response.status_code
+        if meter and status in {400, 401, 402, 403, 404, 413, 422, 429}:
+            meter.tokens = (0, 0)
         # 不使用响应正文、URL或底层异常构造错误，避免泄漏密钥与源资料。
         if status == 401:
             raise ServiceError(503, 50302, f"{self._capability}上游认证失败（401）")
