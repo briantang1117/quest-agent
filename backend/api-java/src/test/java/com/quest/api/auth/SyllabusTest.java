@@ -62,7 +62,7 @@ class SyllabusTest {
         if(deleted)db.update("UPDATE public_question SET deleted_at=CURRENT_TIMESTAMP,deleted_by=? WHERE id=?",actor,q);
         return q;
     }
-    JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode),200);}
+    JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode,"preview",false),200);}
     @org.springframework.test.context.bean.override.mockito.MockitoBean com.quest.api.publicbank.PublicAiClient parser;
     @org.springframework.test.context.bean.override.mockito.MockitoBean com.quest.api.syllabus.SyllabusPipeline pipeline;
     JsonNode upload(String token,String exam,int year)throws Exception{

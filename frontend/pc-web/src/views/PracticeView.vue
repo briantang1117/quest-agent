@@ -38,7 +38,10 @@ async function start(mode: 'practice' | 'chat') {
   busy.value = true
   try {
     const session = await api.create(crypto.randomUUID(), mode)
-    await router.push({ path: '/practice/agent', query: { session: session.id } })
+    await router.push({
+      path: '/practice/agent',
+      query: { session: session.id, ...(session.persisted === false ? { draft: '1' } : {}) },
+    })
   } catch (e) {
     notifyError(e)
   } finally {
@@ -94,7 +97,11 @@ async function start(mode: 'practice' | 'chat') {
     <h2>继续上次对话</h2>
     <a-list :bordered="false"
       ><a-list-item v-for="session in sessions.slice(0, 5)" :key="session.id"
-        ><RouterLink :to="{ path: '/practice/agent', query: { session: session.id } }"
+        ><RouterLink
+          :to="{
+            path: '/practice/agent',
+            query: { session: session.id },
+          }"
           ><strong>{{ session.title }}</strong
           ><span>{{ subjectLabel(session.subject) }}</span
           ><IconArrowRight /></RouterLink></a-list-item

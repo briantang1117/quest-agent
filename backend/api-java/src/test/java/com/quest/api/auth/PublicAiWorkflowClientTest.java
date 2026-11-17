@@ -21,7 +21,7 @@ class PublicAiWorkflowClientTest {
                 String stream=switch(count.incrementAndGet()){
                     case 1->"event:workflow_state\ndata:{}\n\nevent:workflow_result\ndata:{\"kind\":\"state_only\"}\n\nevent:done\ndata:{}\n\n";
                     case 2->"event:delta\ndata:{\"text\":\"缺少终态\"}\n\nevent:done\ndata:{}\n\n";
-                    default->"event:delta\ndata:{\"text\":\"讲解完成\"}\n\nevent:workflow_result\ndata:{\"kind\":\"explain\"}\n\nevent:done\ndata:{}\n\n";
+                    default->"event:delta\ndata:{\"text\":\"讲解完成\"}\n\nevent:memory\ndata:{\"summary\":\"历史要点\",\"progress\":\"\",\"questions\":\"\",\"plan\":\"\"}\n\nevent:title\ndata:{\"title\":\"概念辨析\"}\n\nevent:workflow_result\ndata:{\"kind\":\"explain\"}\n\nevent:done\ndata:{}\n\n";
                 };
                 byte[] bytes=stream.getBytes(StandardCharsets.UTF_8);exchange.getResponseHeaders().set("Content-Type","text/event-stream");exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);
             }finally{exchange.close();}
@@ -31,7 +31,7 @@ class PublicAiWorkflowClientTest {
             var changed=new AtomicInteger();var control=new CoachStreamControl();control.onWorkflowState(changed::incrementAndGet);
             assertThat(client.coachWorkflow(payload,caller,x->{},control).path("kind").asText()).isEqualTo("state_only");assertThat(changed.get()).isEqualTo(1);
             assertThatThrownBy(()->client.coachWorkflow(payload,caller,x->{},new CoachStreamControl())).isInstanceOf(UserFailure.class);
-            var text=new StringBuilder();assertThat(client.coachWorkflow(payload,caller,text::append,new CoachStreamControl()).path("kind").asText()).isEqualTo("explain");assertThat(text.toString()).isEqualTo("讲解完成");
+            var text=new StringBuilder();var result=client.coachWorkflow(payload,caller,text::append,new CoachStreamControl());assertThat(result.path("kind").asText()).isEqualTo("explain");assertThat(result.path("memory").path("summary").asText()).isEqualTo("历史要点");assertThat(result.path("title").asText()).isEqualTo("概念辨析");assertThat(text.toString()).isEqualTo("讲解完成");
             var requests=org.mockito.ArgumentCaptor.forClass(Object.class);org.mockito.Mockito.verify(audit,org.mockito.Mockito.times(3)).record(org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.eq("ai.coach_workflow"),org.mockito.ArgumentMatchers.isNull(),org.mockito.ArgumentMatchers.eq("workflow"),requests.capture(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyLong(),org.mockito.ArgumentMatchers.eq(1),org.mockito.ArgumentMatchers.isNull());
             for(Object request:requests.getAllValues())assertThat(json.valueToTree(request).toString()).contains("context").doesNotContain("grant","PRIVATE_GRANT");
         }finally{server.stop(0);}

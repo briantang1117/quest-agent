@@ -106,7 +106,7 @@ public class PublicAiClient {
         long started=System.nanoTime();
         int timeout=workflow?135:95;String kind="";boolean workflowResult=false;
         StringBuilder text=new StringBuilder();JsonNode suggestions=json.createObjectNode().set("items",json.createArrayNode());
-        JsonNode sources=json.createArrayNode();
+        JsonNode sources=json.createArrayNode(),memory=json.nullNode(),title=json.nullNode();
         Throwable auditFailure=null;
         var deadline=DEADLINES.schedule(control::close,timeout,java.util.concurrent.TimeUnit.SECONDS);
         try{
@@ -163,6 +163,10 @@ public class PublicAiClient {
                             String nextKind=json.readTree(data.toString()).path("kind").asText();
                             if(workflowResult||!Set.of("state_only","explain").contains(nextKind))throw new UserFailure(503,50204,"编排终态格式错误");
                             workflowResult=true;kind=nextKind;
+                        }else if(event.equals("title")){
+                            title=json.readTree(data.toString()).path("title");
+                        }else if(event.equals("memory")){
+                            memory=json.readTree(data.toString());
                         }else if(event.equals("sources")){
                             sources=com.quest.api.coach.CoachSources.validate(json.readTree(data.toString()).path("items"),json);
                         }else if(!event.isEmpty())throw new UserFailure(503,50204,"未知AI事件");
@@ -173,7 +177,7 @@ public class PublicAiClient {
                     else if(!value.startsWith(":"))throw new UserFailure(503,50204,"AI服务流格式错误");
                 }
                 if(!done||workflow&&(!workflowResult||kind.equals("state_only")&&!text.isEmpty())||text.toString().isBlank()&&(!workflow||!kind.equals("state_only")))throw new UserFailure(503,50204,"AI回答未完整返回");
-                control.check();((tools.jackson.databind.node.ObjectNode)suggestions).set("sources",sources);if(workflow)((tools.jackson.databind.node.ObjectNode)suggestions).put("kind",kind);return suggestions;
+                control.check();((tools.jackson.databind.node.ObjectNode)suggestions).set("title",title);((tools.jackson.databind.node.ObjectNode)suggestions).set("memory",memory);((tools.jackson.databind.node.ObjectNode)suggestions).set("sources",sources);if(workflow)((tools.jackson.databind.node.ObjectNode)suggestions).put("kind",kind);return suggestions;
             }finally{control.detach();}
         }catch(InterruptedException failure){auditFailure=failure;Thread.currentThread().interrupt();throw new UserFailure(503,50332,"本次生成已中断，未自动重试");}
         catch(RuntimeException failure){auditFailure=failure;throw failure;}

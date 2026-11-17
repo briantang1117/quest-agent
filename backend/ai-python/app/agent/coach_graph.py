@@ -4,13 +4,14 @@ import json
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agent.coach_capabilities import (
     SUGGESTION_CAPABILITY_PROMPT,
     filter_suggestions,
     normalize_intent,
 )
+from app.agent.coach_memory import MEMORY_PROMPT, TITLE_PROMPT, clean_memory, clean_title
 from app.core.errors import ServiceError
 from app.llm.base import LLMProvider
 
@@ -51,6 +52,20 @@ class Suggestion(BaseModel):
 
 
 class CoachReply(BaseModel):
+    title: str | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def title_update(cls, value):
+        return clean_title(value)
+
+    memory: dict | None = None
+
+    @field_validator("memory", mode="before")
+    @classmethod
+    def memory_update(cls, value):
+        return clean_memory(value)
+
     # 只取 action/keys/reply/suggestions：模型偶尔多回 correct、answer_keys 之类的元信息，
     # 这类多余字段不该让整轮陪练失败（真实故障率约一半），但也不能被当成答案采用。
     model_config = ConfigDict(extra="ignore")
@@ -108,6 +123,8 @@ def build_coach_graph(provider: LLMProvider):
                         + SUGGESTION_CAPABILITY_PROMPT
                         + MATERIAL_INTENT_PROMPT
                         + SYLLABUS_PROMPT
+                        + MEMORY_PROMPT
+                        + TITLE_PROMPT
                     ),
                 },
                 {"role": "user", "content": json.dumps(state["context"], ensure_ascii=False)},
@@ -124,7 +141,7 @@ def build_coach_graph(provider: LLMProvider):
         for _ in range(MAX_ATTEMPTS):
             content = await provider.generate_json(state["messages"])
             try:
-                result = CoachReply.model_validate_json(content).model_dump()
+                result = CoachReply.model_validate_json(content).model_dump(exclude_none=True)
             except (ValueError, ValidationError):
                 last = ServiceError(502, 50203, "陪练模型返回无效内容，已重试仍未通过")
                 continue
@@ -132,6 +149,12 @@ def build_coach_graph(provider: LLMProvider):
             result["suggestions"] = filter_suggestions(
                 result["suggestions"], state["context"].get("capabilities", {})
             )
+            if result.get("memory") is not None:
+                result["memory"]["topic_revision"] = (
+                    state["context"].get("learning_topic", {}).get("revision")
+                )
+            if not state["context"].get("title_pending"):
+                result.pop("title", None)
             return {"content": content, "result": result}
         raise last or ServiceError(502, 50203, "陪练模型返回无效内容")
 

@@ -50,7 +50,37 @@ export interface CoachMessage {
   suggestions?: CoachSuggestion[]
   sources?: CoachSource[]
 }
+export interface LearningTopic {
+  id: string
+  subject: StudySubject
+  title: string
+  goal: string
+  progress: string
+  questions: string
+  plan: string
+  revision: number
+  source_session_id: string | null
+  updated_at: string
+}
+export interface LearningTopicInput {
+  requestId?: string
+  subject: StudySubject
+  title: string
+  goal: string
+  progress: string
+  questions: string
+  plan: string
+  revision: number
+}
+export interface SessionMemory {
+  summary: string
+  updatedAt: string
+  throughMessageId?: string
+}
 export interface CoachSession {
+  persisted?: boolean
+  memory?: SessionMemory | null
+  topic?: LearningTopic | null
   capabilities?: Partial<Record<'materials' | 'search' | 'syllabus' | 'coach', boolean>>
   id: string
   subject: StudySubject
@@ -71,6 +101,7 @@ export interface CoachSessionSummary {
   updatedAt: string
 }
 export interface CoachTurn {
+  draft?: { topicId: string | null }
   requestId: string
   action: 'next' | 'answer' | 'chat'
   text: string
@@ -79,6 +110,33 @@ export interface CoachTurn {
 }
 export function createCoachApi(auth: Pick<ReturnType<typeof useAuthStore>, 'request'>) {
   return {
+    topics: () =>
+      auth.request<{ list: LearningTopic[] }>({ method: 'GET', url: '/api/v1/coach/topics' }),
+    createTopic: (data: LearningTopicInput & { requestId: string }) =>
+      auth.request<LearningTopic>({ method: 'POST', url: '/api/v1/coach/topics', data }),
+    updateTopic: (id: string, data: LearningTopicInput) =>
+      auth.request<LearningTopic>({
+        method: 'PUT',
+        url: `/api/v1/coach/topics/${encodeURIComponent(id)}`,
+        data,
+      }),
+    deleteTopic: (id: string) =>
+      auth.request<null>({
+        method: 'DELETE',
+        url: `/api/v1/coach/topics/${encodeURIComponent(id)}`,
+      }),
+    bindTopic: (id: string, topicId: string | null) =>
+      auth.request<CoachSession>({
+        method: 'PUT',
+        url: `/api/v1/coach/sessions/${encodeURIComponent(id)}/topic`,
+        data: { topicId },
+      }),
+    updateMemory: (id: string, summary: string) =>
+      auth.request<CoachSession>({
+        method: 'PUT',
+        url: `/api/v1/coach/sessions/${encodeURIComponent(id)}/memory`,
+        data: { summary },
+      }),
     preference: async () => {
       const value = await auth.request<{ subject: StudySubject | null; examYear?: number | null }>({
         method: 'GET',
@@ -98,11 +156,16 @@ export function createCoachApi(auth: Pick<ReturnType<typeof useAuthStore>, 'requ
         method: 'GET',
         url: '/api/v1/coach/sessions',
       }),
-    create: (requestId: string, mode: 'practice' | 'chat') =>
+    create: (requestId: string, mode: 'practice' | 'chat', topicId?: string) =>
       auth.request<CoachSession>({
         method: 'POST',
         url: '/api/v1/coach/sessions',
-        data: { requestId, mode },
+        data: {
+          requestId,
+          mode,
+          ...(topicId ? { topicId } : {}),
+          ...(mode === 'chat' ? { preview: true } : {}),
+        },
       }),
     get: (id: string, silent = false) =>
       auth.request<CoachSession>({
@@ -210,6 +273,7 @@ function isSession(value: unknown): value is CoachSession {
     typeof value.title === 'string' &&
     STUDY_SUBJECTS.some((item) => item.value === value.subject) &&
     typeof value.processing === 'boolean' &&
+    (value.persisted === undefined || typeof value.persisted === 'boolean') &&
     strings(value.suggestedKeys) &&
     (value.materials === undefined ||
       (Array.isArray(value.materials) && value.materials.every(isMaterial))) &&

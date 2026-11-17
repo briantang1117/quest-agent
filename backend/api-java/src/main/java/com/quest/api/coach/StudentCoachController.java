@@ -31,6 +31,10 @@ public class StudentCoachController {
     @GetMapping("/coach/sessions") public ApiResponse<?> list(HttpServletRequest r){return ok(service.list(who(r)),r);}
     @PostMapping("/coach/sessions") public ApiResponse<?> create(@RequestBody StudentCoachService.Create body,HttpServletRequest r){return ok(service.create(who(r),body),r);}
     @GetMapping("/coach/sessions/{id}") public ApiResponse<?> get(@PathVariable String id,HttpServletRequest r){return ok(service.get(who(r),id),r);}
+    public record MemoryEdit(String summary){}
+    public record TopicBinding(java.util.UUID topicId){}
+    @PutMapping("/coach/sessions/{id}/memory") public ApiResponse<?> memory(@PathVariable String id,@RequestBody MemoryEdit body,HttpServletRequest r){return ok(service.editMemory(who(r),id,body.summary(),null,false),r);}
+    @PutMapping("/coach/sessions/{id}/topic") public ApiResponse<?> topic(@PathVariable String id,@RequestBody TopicBinding body,HttpServletRequest r){return ok(service.editMemory(who(r),id,null,body.topicId(),true),r);}
     @DeleteMapping("/coach/sessions/{id}") public ApiResponse<?> delete(@PathVariable String id,HttpServletRequest r){service.delete(who(r),id);return ok(null,r);}
     @PostMapping("/coach/sessions/{id}/turns") public ApiResponse<?> turn(@PathVariable String id,@RequestBody StudentCoachService.Turn body,HttpServletRequest r){return ok(service.turn(who(r),id,body,TraceFilter.traceId(r)),r);}
 

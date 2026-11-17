@@ -1318,3 +1318,56 @@ it('功能未开放时隐藏文件整理入口和受限建议，保留聊天内�
   expect(wrapper.text()).not.toContain('导出学习文档')
   expect(wrapper.text()).not.toContain('联网核对来源')
 })
+
+it('空白欢迎页保持草稿，首条消息携带创建信息，完成后更新自动标题并移除草稿标记', async () => {
+  const stream = mockStream()
+  let saved = false
+  const empty = {
+    ...chatSession(),
+    persisted: false,
+    messages: [{ id: 'welcome', role: 'assistant' as const, text: '欢迎提问' }],
+  }
+  const { wrapper, router, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}&draft=1`,
+    (config) => {
+      if (config.url === '/api/v1/coach/sessions' && config.method === 'POST') return empty
+      if (config.url === '/api/v1/coach/sessions')
+        return {
+          list: saved
+            ? [
+                {
+                  id: sessionId,
+                  subject: empty.subject,
+                  title: '城市平台概念辨析',
+                  updatedAt: '2026-11-16T00:00:00Z',
+                },
+              ]
+            : [],
+        }
+      throw new Error('unexpected request')
+    },
+  )
+  await flushPromises()
+  expect(wrapper.get('.coach-sessions nav').text()).toBe('')
+  expect(wrapper.find('[data-test="learning-memory"]').exists()).toBe(false)
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({
+      method: 'POST',
+      data: { requestId: sessionId, mode: 'chat', preview: true },
+    }),
+  )
+  await wrapper.get('textarea').setValue('请比较城市平台概念')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(JSON.parse(stream.fetcher.mock.calls[0]![1]!.body as string).draft).toEqual({
+    topicId: null,
+  })
+  saved = true
+  stream.event('done', { ...chatSession(), persisted: true, title: '城市平台概念辨析' })
+  stream.close()
+  await flushPromises()
+  expect(router.currentRoute.value.query.draft).toBeUndefined()
+  expect(wrapper.get('h1').text()).toBe('城市平台概念辨析')
+  expect(wrapper.get('.coach-sessions nav').text()).toContain('城市平台概念辨析')
+})

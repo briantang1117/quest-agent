@@ -30,7 +30,7 @@ class StudentCoachTest {
         db.execute("DROP ALL OBJECTS");db.execute("CREATE ROLE quest_app");db.execute("CREATE ROLE quest_ai");db.execute("CREATE SEQUENCE app_user_id_seq");db.execute("CREATE SEQUENCE audit_log_id_seq");
         db.execute("CREATE TABLE app_user(id BIGSERIAL PRIMARY KEY,username VARCHAR(64) UNIQUE NOT NULL,password_hash VARCHAR(128) NOT NULL,display_name VARCHAR(128) NOT NULL,status VARCHAR(16) DEFAULT 'active',created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
         db.execute("CREATE TABLE audit_log(id BIGSERIAL PRIMARY KEY,actor BIGINT,action VARCHAR(64),target_type VARCHAR(64),target_id VARCHAR(64),before_data JSONB,after_data JSONB,ip VARCHAR(45),user_agent TEXT,trace_id VARCHAR(64),ai_job_id BIGINT,created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");TestUserSchema.applyV4(db);
-        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql","V12__student_coach_session_soft_delete.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
+        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql","V12__student_coach_session_soft_delete.sql","V15__learning_topics.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
         var bcrypt=new BCryptPasswordEncoder();for(String name:List.of("admin","alice","bob"))db.update("INSERT INTO app_user(username,password_hash,display_name,account_type,must_change_password) VALUES (?,?,?,?,FALSE)",name,bcrypt.encode(PASSWORD),name,name.equals("admin")?"admin":"student");
         var chatReply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"我们一起理解这个知识点。\"}");
         // Service 走带归因的三参重载，两参重载仅为兼容保留，两者都要打桩。
@@ -66,7 +66,7 @@ class StudentCoachTest {
         if(deleted)db.update("UPDATE public_question SET deleted_at=CURRENT_TIMESTAMP,deleted_by=? WHERE id=?",actor,q);
         return q;
     }
-    JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode),200);}
+    JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode,"preview",false),200);}
     @Test void deletedSessionIsHiddenAndCannotReplayOrRecreate()throws Exception{
         String alice=token("alice");preference(alice,"vocational_aptitude");
         UUID session=UUID.randomUUID();create(alice,session,"chat");
@@ -519,6 +519,84 @@ class StudentCoachTest {
         var wrong=json.readTree("{\"action\":\"material\",\"keys\":[],\"reply\":\"按对比维度组织内容。\"}");
         org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(wrong);
         postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","梳理常考提法，做成对比表。"),200);
+    }
+
+    @Test void rollingMemoryUsesLargerBoundedWindowAndSurvivesReload()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        var state=(tools.jackson.databind.node.ObjectNode)json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+        var messages=state.putArray("messages");for(int i=0;i<45;i++)messages.addObject().put("id","m"+i).put("role",i%2==0?"user":"assistant").put("text","历史内容"+i);
+        state.set("memory",json.createObjectNode().put("summary","早期已讨论的概念与用户疑问"));db.update("UPDATE student_coach_session SET state_json=? WHERE id=?",json.writeValueAsString(state),session);
+        var reply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"继续解释概念。\",\"memory\":{\"summary\":\"早期概念加本轮结论\",\"progress\":\"\",\"questions\":\"\",\"plan\":\"\"}}");
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{
+            var context=(Map<?,?>)call.getArgument(0);assertThat((List<?>)context.get("history")).hasSize(32);assertThat(context.get("memory").toString()).contains("早期已讨论");assertThat(context.containsKey("learning_topic")).isFalse();return reply;
+        });
+        var result=postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","继续这个概念"),200);
+        assertThat(result.path("memory").path("summary").asText()).isEqualTo("早期概念加本轮结论");assertThat(result.path("memory").path("throughMessageId").asText()).isEqualTo(result.path("messages").get(result.path("messages").size()-1).path("id").asText());
+        mvc.perform(get("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(jsonPath("$.data.memory.summary").value("早期概念加本轮结论"));
+    }
+    @Test void topicsAreExplicitPrivateVersionedAndCanContinueInNewSession()throws Exception{
+        String alice=token("alice"),bob=token("bob");preference(alice,"vocational_aptitude");preference(bob,"vocational_aptitude");UUID topic=UUID.randomUUID();
+        var body=new LinkedHashMap<String,Object>();body.put("requestId",topic);body.put("subject","vocational_aptitude");body.put("title","城市治理概念");body.put("goal","区分相近表述");body.put("revision",0);
+        postData("/api/v1/coach/topics",alice,body,200);
+        mvc.perform(get("/api/v1/coach/topics").header("Authorization","Bearer "+bob)).andExpect(jsonPath("$.data.list.length()").value(0));
+        postData("/api/v1/coach/sessions",bob,Map.of("requestId",UUID.randomUUID(),"mode","chat","topicId",topic,"preview",false),404);
+        UUID session=UUID.randomUUID();postData("/api/v1/coach/sessions",alice,Map.of("requestId",session,"mode","chat","topicId",topic,"preview",false),200);
+        var reply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"我们比较这两个概念。\",\"memory\":{\"summary\":\"讨论了城市治理概念\",\"progress\":\"已讨论三级平台\",\"questions\":\"一网统管的边界\",\"plan\":\"下次比较概念\",\"topic_revision\":0}}");
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{assertThat(((Map<?,?>)call.getArgument(0)).get("learning_topic").toString()).contains("区分相近表述");return reply;});
+        var turn=Map.of("requestId",UUID.randomUUID(),"action","chat","text","帮我区分概念");postData("/api/v1/coach/sessions/"+session+"/turns",alice,turn,200);postData("/api/v1/coach/sessions/"+session+"/turns",alice,turn,200);
+        var continued=postData("/api/v1/coach/sessions",alice,Map.of("requestId",UUID.randomUUID(),"mode","chat","topicId",topic,"preview",false),200);
+        assertThat(continued.path("topic").path("progress").asText()).isEqualTo("已讨论三级平台");assertThat(continued.path("topic").path("revision").asInt()).isEqualTo(1);turnCount(1);
+        mvc.perform(put("/api/v1/coach/topics/"+topic).header("Authorization","Bearer "+alice).contentType("application/json").content(json.writeValueAsString(body))).andExpect(status().isConflict());
+        mvc.perform(delete("/api/v1/coach/topics/"+topic).header("Authorization","Bearer "+bob)).andExpect(status().isNotFound());
+        mvc.perform(delete("/api/v1/coach/topics/"+topic).header("Authorization","Bearer "+alice)).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/coach/sessions/"+session).header("Authorization","Bearer "+alice)).andExpect(jsonPath("$.data.topic").isEmpty());
+    }
+    @Test void staleTopicMemoryCannotOverwriteManualCorrectionAndSessionMemoryCanBeCleared()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID topic=UUID.randomUUID(),session=UUID.randomUUID();long user=db.queryForObject("SELECT id FROM app_user WHERE username='alice'",Long.class);
+        postData("/api/v1/coach/topics",alice,Map.of("requestId",topic,"subject","vocational_aptitude","title","考纲范围"),200);
+        postData("/api/v1/coach/sessions",alice,Map.of("requestId",session,"mode","chat","topicId",topic,"preview",false),200);
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenAnswer(call->{
+            db.update("UPDATE student_learning_topic SET progress='用户手工确认的进度',revision=revision+1 WHERE id=? AND user_id=?",topic,user);
+            return json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"考纲咨询回复\",\"memory\":{\"summary\":\"本轮考纲咨询\",\"progress\":\"过时的进度\",\"questions\":\"\",\"plan\":\"\",\"topic_revision\":0}}");
+        });
+        postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","问考纲"),200);
+        assertThat(db.queryForObject("SELECT progress FROM student_learning_topic WHERE id=?",String.class,topic)).isEqualTo("用户手工确认的进度");
+        mvc.perform(put("/api/v1/coach/sessions/"+session+"/memory").header("Authorization","Bearer "+alice).contentType("application/json").content("{\"summary\":\"\"}")).andExpect(status().isOk()).andExpect(jsonPath("$.data.memory").isEmpty());
+    }
+
+    @Test void welcomeDraftIsNotPersistedAndFirstMessageCreatesExactlyOneSessionAndUserMessage()throws Exception{
+        String alice=token("alice"),bob=token("bob");preference(alice,"vocational_aptitude");preference(bob,"vocational_aptitude");UUID session=UUID.randomUUID();
+        var draftBody=Map.of("requestId",session,"mode","chat");
+        assertThat(postData("/api/v1/coach/sessions",alice,draftBody,200).path("persisted").asBoolean()).isFalse();postData("/api/v1/coach/sessions",alice,draftBody,200);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM student_coach_session",Integer.class)).isZero();
+        mvc.perform(get("/api/v1/coach/sessions").header("Authorization","Bearer "+alice)).andExpect(jsonPath("$.data.list.length()").value(0));
+        var response=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"这里是知识讲解。\",\"title\":\"城市运行平台概念辨析\"}");
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(response);
+        var first=Map.of("requestId",UUID.randomUUID(),"action","chat","text","请比较城市运行平台相关概念","draft",Map.of());
+        var saved=postData("/api/v1/coach/sessions/"+session+"/turns",alice,first,200);postData("/api/v1/coach/sessions/"+session+"/turns",alice,first,200);
+        assertThat(saved.path("persisted").asBoolean()).isTrue();assertThat(saved.path("title").asText()).isEqualTo("城市运行平台概念辨析");
+        int count=0;for(var message:saved.path("messages"))if(message.path("role").asText().equals("user"))count++;assertThat(count).isEqualTo(1);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM student_coach_session",Integer.class)).isEqualTo(1);
+        mvc.perform(get("/api/v1/coach/sessions").header("Authorization","Bearer "+alice)).andExpect(jsonPath("$.data.list[0].title").value("城市运行平台概念辨析"));
+        postData("/api/v1/coach/sessions/"+session+"/turns",bob,first,404);
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"接着说\",\"title\":\"不应覆盖已有标题\"}"));
+        assertThat(postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","再举一个例子"),200).path("title").asText()).isEqualTo("城市运行平台概念辨析");
+    }
+    @Test void invalidGeneratedTitleKeepsFirstUserMessageAsFallbackTitle()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();
+        var result=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"解答\",\"title\":\"坏标题<不能保存>\"}");
+        org.mockito.Mockito.when(ai.turn(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any())).thenReturn(result);
+        var saved=postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","考纲范围怎么理解","draft",Map.of()),200);
+        assertThat(saved.path("title").asText()).isEqualTo("考纲范围怎么理解");
+        assertThat(db.queryForObject("SELECT title FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo("考纲范围怎么理解");
+    }
+
+    @Test void firstDraftClaimRetainsRealUserMessageEvenWhenModelFails()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();
+        stubFailure(new UserFailure(503,50203,"offline"));
+        postData("/api/v1/coach/sessions/"+session+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","我想了解考纲","draft",Map.of()),503);
+        var state=json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session));
+        assertThat(state.path("messages").toString()).contains("我想了解考纲");assertThat(db.queryForObject("SELECT title FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo("我想了解考纲");
     }
 
 }

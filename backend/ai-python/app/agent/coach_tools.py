@@ -54,7 +54,7 @@ async def explain_with_tools(
                     or round_index == max_tool_rounds
                     or executor.count >= max_tool_calls
                 )
-                if len(json.dumps(history, ensure_ascii=False).encode("utf-8")) > 128 * 1024:
+                if len(json.dumps(history, ensure_ascii=False).encode("utf-8")) > 512 * 1024:
                     raise ServiceError(413, 41301, "陪练工具上下文超过上限")
                 content, calls = [], []
                 try:

@@ -24,8 +24,9 @@ public class StudentCoachService {
     /** 与AI客户端保持一致的正文上限；历史上下文截断另用6000。 */
     private static final int MAX_REPLY_CHARS=12000;
     public record Preference(String subject,Integer examYear) {}
-    public record Create(UUID requestId,String mode) {}
-    public record Turn(UUID requestId,String action,String text,String questionId,List<String> keys) {}
+    public record Create(UUID requestId,String mode,UUID topicId,Boolean preview) { public Create(UUID requestId,String mode){this(requestId,mode,null,false);} }
+    public record DraftStart(UUID topicId) {}
+    public record Turn(UUID requestId,String action,String text,String questionId,List<String> keys,DraftStart draft) { public Turn(UUID requestId,String action,String text,String questionId,List<String> keys){this(requestId,action,text,questionId,keys,null);} }
     record Session(UUID id,long userId,String subject,String title,ObjectNode state,UUID processing) {}
     record Pending(Session session,Turn request,JsonNode replay) {}
     private final ObjectProvider<JdbcTemplate> jdbc;
@@ -38,6 +39,9 @@ public class StudentCoachService {
     @Value("${quest.coach.harness.enabled:true}") private boolean harnessEnabled=true;
     private final com.quest.api.syllabus.SyllabusService syllabi;
     @org.springframework.beans.factory.annotation.Autowired private com.quest.api.admin.AdminControlService controls;
+    @org.springframework.beans.factory.annotation.Autowired private CoachMemoryService memory;
+    @Value("${quest.coach.context.history-messages:32}") private int historyMessages=32;
+    @Value("${quest.coach.context.history-chars:96000}") private int historyChars=96000;
     private final com.quest.api.materials.LearningMaterialService materials;
     private record ActiveStream(UUID sessionId,long userId,UUID requestId,CoachStreamControl control) {}
     @org.springframework.context.event.EventListener public void sessionsRevoked(UserService.SessionsRevoked event){for(var stream:activeStreams)if(stream.userId()==event.userId())stream.control().close();}
@@ -71,18 +75,26 @@ public class StudentCoachService {
             var existing=find(input.requestId(),user,true);if(existing!=null)return view(existing);
             // ID全局唯一，但不可用它穿透他人的会话。
             if(db().queryForObject("SELECT COUNT(*) FROM student_coach_session WHERE id=?",Integer.class,input.requestId())!=0)throw missing();
-            String subject=subject(user);if(subject==null)throw new UserFailure(409,40930,"请先在个人中心选择学习科目");
-            ObjectNode state=json.createObjectNode();state.putArray("messages");state.putArray("seen");
+            String subject=memory.subject(user,input.topicId(),subject(user));if(subject==null)throw new UserFailure(409,40930,"请先在个人中心选择学习科目");
+            ObjectNode state=json.createObjectNode();state.putArray("messages");state.putArray("seen");memory.bind(user,subject,state,input.topicId());
             Integer year=examYear(user);if(year!=null){state.put("examYear",year);UUID version=syllabi.boundVersion(subject,year);if(version!=null)state.put("syllabusVersionId",version.toString());}
             Session session=new Session(input.requestId(),user,subject,input.mode().equals("practice")?"互动刷题":"个人对话",state,null);
             if(input.mode().equals("practice")){message(state,"user","按我当前选择的科目开始刷题，一次一道，回答后再讲解。");nextQuestion(session);}
             else message(state,"assistant","你好，我是你的个人学习Agent。可以问我知识点，也可以说‘开始刷题’，我会从当前科目的已发布题目中选一道。 ");
+            if(!Boolean.FALSE.equals(input.preview())&&input.mode().equals("chat")){ObjectNode response=(ObjectNode)view(session);response.put("persisted",false);return response;}
             db().update("INSERT INTO student_coach_session(id,user_id,subject,title,state_json) VALUES (?,?,?,?,?)",session.id(),user,subject,session.title(),json.writeValueAsString(state));
             return view(session);
         });
     }
     public Map<String,Object> list(SessionIdentity who){return tx(who,()->Map.of("list",db().query("SELECT id,subject,title,updated_at FROM student_coach_session WHERE user_id=? AND deleted_at IS NULL ORDER BY updated_at DESC,id LIMIT 50",(rs,n)->Map.of("id",rs.getString("id"),"subject",rs.getString("subject"),"title",rs.getString("title"),"updatedAt",rs.getObject("updated_at",OffsetDateTime.class).toString()),Long.parseLong(who.user().id()))));}
     public JsonNode get(SessionIdentity who,String id){UUID key=uuid(id);return tx(who,()->view(require(key,Long.parseLong(who.user().id()),false)));}
+    public JsonNode editMemory(SessionIdentity who,String id,String summary,UUID topicId,boolean bind){
+        return tx(who,()->{Session s=require(uuid(id),Long.parseLong(who.user().id()),true);if(s.processing()!=null)throw conflict();
+            if(bind)memory.bind(s.userId(),s.subject(),s.state(),topicId);
+            else {if(summary==null||summary.length()>4000)throw new IllegalArgumentException();s.state().remove("_pendingMemory");if(summary.isBlank())s.state().remove("memory");else s.state().set("memory",json.createObjectNode().put("summary",summary.strip()).put("updatedAt",java.time.Instant.now().toString()));}
+            db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(s.state()),s.id(),s.userId());return view(s);
+        });
+    }
     /** 与认领/落库共用本人会话行锁；提交删除后才取消活动生成，旧进程残留也可直接清理。 */
     public void delete(SessionIdentity who,String id){UUID key=uuid(id);tx(who,()->{
         Session session=require(key,Long.parseLong(who.user().id()),true);
@@ -116,11 +128,19 @@ public class StudentCoachService {
         Pending pending;
         try{
             pending=tx(who,()->{
-            Session s=require(key,Long.parseLong(who.user().id()),true);
+            Session s=find(key,Long.parseLong(who.user().id()),true);
+            if(s==null&&input.draft()!=null){
+                if(input.action().equals("answer"))throw new IllegalArgumentException();
+                create(who,new Create(key,"chat",input.draft().topicId(),false));
+                s=require(key,Long.parseLong(who.user().id()),true);
+                message(s.state(),"user",input.action().equals("chat")?input.text().strip():"下一题");s.state().put("_precommittedUser",input.requestId().toString());
+            }
+            if(s==null)throw missing();
+            prepareTitle(s,input);
             var prior=db().queryForList("SELECT request_hash,status,response_json FROM student_coach_turn WHERE session_id=? AND request_id=?",key,input.requestId());
             if(!prior.isEmpty()){
                 var row=prior.getFirst();if(!Objects.equals(row.get("request_hash"),requestFingerprint(input)))throw conflict();
-                if("done".equals(row.get("status")))return new Pending(s,input,filterCapabilities(json.readTree((String)row.get("response_json")),s.userId()));
+                if("done".equals(row.get("status"))){ObjectNode replay=(ObjectNode)json.readTree((String)row.get("response_json"));replay.set("memory",s.state().has("memory")?s.state().path("memory").deepCopy():json.nullNode());replay.set("topic",json.valueToTree(memory.linked(s.userId(),s.state())));return new Pending(s,input,filterCapabilities(replay,s.userId()));}
                 if("processing".equals(row.get("status")))throw conflict();
                 throw new UserFailure(503,50331,"本次消息处理失败，未自动重试");
             }
@@ -132,7 +152,7 @@ public class StudentCoachService {
                 db().update("UPDATE student_coach_session SET processing_request=NULL WHERE id=? AND user_id=? AND deleted_at IS NULL AND processing_request=?",s.id(),s.userId(),s.processing());
             }
             db().update("INSERT INTO student_coach_turn(id,session_id,request_id,request_hash,status) VALUES (?,?,?,?,'processing')",UUID.randomUUID(),key,input.requestId(),requestFingerprint(input));
-            db().update("UPDATE student_coach_session SET processing_request=? WHERE id=? AND user_id=? AND deleted_at IS NULL",input.requestId(),key,s.userId());
+            db().update("UPDATE student_coach_session SET processing_request=?,state_json=?,title=? WHERE id=? AND user_id=? AND deleted_at IS NULL",input.requestId(),json.writeValueAsString(s.state()),displayTitle(s),key,s.userId());
             return new Pending(new Session(s.id(),s.userId(),s.subject(),s.title(),s.state(),null),input,null);
             });
         }catch(RuntimeException failure){
@@ -152,7 +172,7 @@ public class StudentCoachService {
             Session s=pending.session();ObjectNode state=s.state();
             String text=input.text()==null?"":input.text().strip();
             String action=input.action();List<String> keys=input.keys()==null?List.of():input.keys();
-            message(state,"user",action.equals("answer")?"我的答案："+String.join("、",keys):action.equals("next")?"下一题":text);
+            userMessage(state,input,action.equals("answer")?"我的答案："+String.join("、",keys):action.equals("next")?"下一题":text);
             if(action.equals("chat")){
                 JsonNode intent=ai.turn(context(s,text),who.user().id(),traceId);
                 action=intent.path("action").asText();
@@ -169,7 +189,7 @@ public class StudentCoachService {
                     message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true);
                 } else if(action.equals("next"))nextQuestion(s);
                 // 纯答疑场景也可能想接着练：模型给文案，能否"下一题"由 Java 状态决定。
-                else suggestions(message(state,"assistant",safeReply(intent)),intent.path("suggestions"),false,hasRemaining(s),s.userId());
+                else {suggestions(message(state,"assistant",safeReply(intent)),intent.path("suggestions"),false,hasRemaining(s),s.userId());memory.stage(state,intent.path("memory"));stageTitle(state,intent.path("title"));}
             }else if(action.equals("next"))nextQuestion(s);
             else if(action.equals("answer")){
                 JsonNode current=state.path("current");
@@ -186,7 +206,7 @@ public class StudentCoachService {
                 try{
                     JsonNode explanation=ai.turn(context(s,"请基于权威判分讲解这道题，说明思路与容易混淆之处。"),who.user().id(),traceId);
                     feedback += "\n\n"+safeReply(explanation);
-                    modelSuggestions=explanation.path("suggestions");
+                    modelSuggestions=explanation.path("suggestions");memory.stage(state,explanation.path("memory"));stageTitle(state,explanation.path("title"));
                 }
                 catch(RuntimeException failure){
                     // 只记录类型，不打题干/解析/模型输出；降级不影响已判分结果。
@@ -195,10 +215,10 @@ public class StudentCoachService {
                 // 判分后可以继续下一题：是否真的还有未做题由 Java 判定，模型只提供文案。
                 suggestions(message(state,"assistant",feedback),modelSuggestions,true,hasRemaining(s),s.userId());
             }
-            JsonNode response=view(s);
             return tx(who,()->{
                 Session live=require(key,s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
-                db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),key,s.userId());
+                memory.commit(s.userId(),s.id(),state);commitTitle(state);JsonNode response=view(s);
+                db().update("UPDATE student_coach_session SET state_json=?,title=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),displayTitle(s),key,s.userId());
                 db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),key,input.requestId());
                 return response;
             });
@@ -278,7 +298,7 @@ public class StudentCoachService {
                     }
                     ((ObjectNode)workflow).put("step",step);
                     active.control().check();
-                    db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),live.id(),live.userId());
+                    db().update("UPDATE student_coach_session SET state_json=?,title=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),displayTitle(live),live.id(),live.userId());
                 }
             }
             return live;
@@ -303,7 +323,7 @@ public class StudentCoachService {
                 if(!current.path("id").asText().equals(input.questionId())||original.state().hasNonNull("result"))throw conflict();
                 validateSelection(current.path("snapshot"),input.keys()==null?List.of():input.keys());
             }
-            message(original.state(),"user",text);
+            userMessage(original.state(),input,text);
             original.state().set("_workflow",json.createObjectNode().put("requestId",input.requestId().toString()).put("message",text));
             checkpoint(who,original,input);saved=true;
             ObjectNode initial=(ObjectNode)view(original);initial.put("processing",true);emit.accept("state",initial);
@@ -339,12 +359,12 @@ public class StudentCoachService {
                 String kind=meta.path("kind").asText();
                 if(kind.equals("explain")){
                     if(reply.isBlank()||input.action().equals("answer")&&!graded)throw unavailable();
-                    var assistant=message(state,"assistant",reply);suggestions(assistant,meta.path("items"),graded,canAdvance(live),live.userId());
+                    var assistant=message(state,"assistant",reply);suggestions(assistant,meta.path("items"),graded,canAdvance(live),live.userId());memory.stage(state,meta.path("memory"));stageTitle(state,meta.path("title"));memory.commit(live.userId(),live.id(),state);commitTitle(state);
                     if(meta.path("sources").isArray()&&!meta.path("sources").isEmpty())assistant.set("sources",CoachSources.validate(meta.path("sources"),json));
                 }else if(!kind.equals("state_only")||!reply.isEmpty()||step.isBlank()||input.action().equals("answer"))throw unavailable();
             }
             JsonNode response=view(new Session(live.id(),live.userId(),live.subject(),live.title(),state,null));
-            db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),live.id(),live.userId());
+            db().update("UPDATE student_coach_session SET state_json=?,title=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),displayTitle(live),live.id(),live.userId());
             db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),live.id(),input.requestId());
             return response;
         });
@@ -358,7 +378,7 @@ public class StudentCoachService {
         ObjectNode assistant=null;
         try{
             control.check();
-            message(state,"user",input.action().equals("answer")?"我的答案："+String.join("、",input.keys()==null?List.of():input.keys()):input.action().equals("next")?"下一题":text);
+            userMessage(state,input,input.action().equals("answer")?"我的答案："+String.join("、",input.keys()==null?List.of():input.keys()):input.action().equals("next")?"下一题":text);
             String action=input.action();
             if(action.equals("answer")){
                 grade(state,input);graded=true;
@@ -400,7 +420,7 @@ public class StudentCoachService {
                 },control);
                 control.check();
                 if(reply.toString().isBlank())throw unavailable();
-                assistant=message(state,"assistant",reply.toString());
+                assistant=message(state,"assistant",reply.toString());memory.stage(state,meta.path("memory"));stageTitle(state,meta.path("title"));
                 suggestions(assistant,meta.path("items"),graded,canAdvance(s),s.userId());
                 if(meta.path("sources").isArray()&&!meta.path("sources").isEmpty())
                     assistant.set("sources",CoachSources.validate(meta.path("sources"),json));
@@ -409,6 +429,7 @@ public class StudentCoachService {
             stage="persist";
             return finish(who,s,input);
         }catch(RuntimeException failure){
+            state.remove("_pendingMemory");state.remove("_pendingTitle");
             org.slf4j.LoggerFactory.getLogger(StudentCoachService.class).warn("Coach stream failed: stage={} trace={} code={} type={}",stage,traceId,failure instanceof UserFailure uf?uf.code():0,failure.getClass().getName());
             // 不把半截回复当完整消息；已判分则保存降级提示并完成本轮，避免再次判分/计费。
             boolean interrupted=Thread.interrupted();
@@ -417,7 +438,7 @@ public class StudentCoachService {
                     message(state,"assistant","学习资料整理任务创建失败，未自动重试；请检查提示后重新发送整理请求。").put("materialNotice",true);
                     tx(who,()->{
                         Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
-                        db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),s.id(),s.userId());
+                        db().update("UPDATE student_coach_session SET state_json=?,title=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(state),displayTitle(s),s.id(),s.userId());
                         db().update("UPDATE student_coach_turn SET status='failed' WHERE session_id=? AND request_id=? AND status='processing'",s.id(),input.requestId());return null;
                     });
                     throw failure;
@@ -466,8 +487,9 @@ public class StudentCoachService {
     private JsonNode finish(SessionIdentity who,Session s,Turn input){
         return tx(who,()->{
             Session live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();
+            memory.commit(s.userId(),s.id(),s.state());commitTitle(s.state());
             JsonNode response=view(s);
-            db().update("UPDATE student_coach_session SET state_json=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(s.state()),s.id(),s.userId());
+            db().update("UPDATE student_coach_session SET state_json=?,title=?,processing_request=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND deleted_at IS NULL",json.writeValueAsString(s.state()),displayTitle(s),s.id(),s.userId());
             db().update("UPDATE student_coach_turn SET status='done',response_json=? WHERE session_id=? AND request_id=?",json.writeValueAsString(response),s.id(),input.requestId());return response;
         });
     }
@@ -516,10 +538,27 @@ public class StudentCoachService {
         return response;
     }
     private JsonNode view(Session s){
-        ObjectNode response=json.createObjectNode();response.put("id",s.id().toString());response.put("subject",s.subject());response.put("title",s.title());response.set("examYear",s.state().has("examYear")?s.state().get("examYear"):json.nullNode());response.set("syllabusVersionId",s.state().has("syllabusVersionId")?s.state().get("syllabusVersionId"):json.nullNode());response.set("messages",s.state().path("messages").deepCopy());
+        ObjectNode response=json.createObjectNode();response.put("id",s.id().toString());response.put("subject",s.subject());response.put("title",displayTitle(s));response.put("persisted",true);response.set("examYear",s.state().has("examYear")?s.state().get("examYear"):json.nullNode());response.set("syllabusVersionId",s.state().has("syllabusVersionId")?s.state().get("syllabusVersionId"):json.nullNode());response.set("messages",s.state().path("messages").deepCopy());
 
+        response.set("memory",s.state().path("memory").isMissingNode()?json.nullNode():s.state().path("memory").deepCopy());response.set("topic",json.valueToTree(memory.linked(s.userId(),s.state())));
         response.set("currentQuestion",s.state().hasNonNull("current")?visibleQuestion(s.state().get("current")):json.nullNode());response.set("result",s.state().path("result").isMissingNode()?json.nullNode():s.state().get("result").deepCopy());
         response.set("suggestedKeys",s.state().path("suggestedKeys").isMissingNode()?json.createArrayNode():s.state().get("suggestedKeys"));response.put("processing",s.processing()!=null);response.set("materials",json.valueToTree(materials.sessionMaterials(s.userId(),s.id())));return filterCapabilities(response,s.userId());
+    }
+    private String displayTitle(Session s){return s.state().path("conversationTitle").asText(s.title());}
+    private void prepareTitle(Session s,Turn input){
+        if(!s.state().has("conversationTitle")&&input.action().equals("chat")){
+            String value=input.text().strip().replaceAll("[\\s\\p{Cntrl}]+"," ");int end=value.offsetByCodePoints(0,Math.min(24,value.codePointCount(0,value.length())));s.state().put("conversationTitle",value.substring(0,end));
+        }
+    }
+    private void stageTitle(ObjectNode state,JsonNode value){
+        if(state.path("titleGenerated").asBoolean()||!value.isString())return;
+        String title=value.asText().strip();if(title.isEmpty()||title.codePointCount(0,title.length())>32||title.matches("(?s).*[\\p{Cntrl}<>].*"))return;
+        state.put("_pendingTitle",title);
+    }
+    private void commitTitle(ObjectNode state){var title=state.remove("_pendingTitle");if(title!=null){state.put("conversationTitle",title.asText());state.put("titleGenerated",true);}}
+    private void userMessage(ObjectNode state,Turn input,String text){
+        if(state.path("_precommittedUser").asText().equals(input.requestId().toString())){state.remove("_precommittedUser");return;}
+        message(state,"user",text);
     }
     private ObjectNode message(ObjectNode state,String role,String text){ArrayNode messages=state.withArray("messages");ObjectNode item=messages.addObject();item.put("id",UUID.randomUUID().toString());item.put("role",role);item.put("text",text);if(messages.size()>100)messages.remove(0);return item;}
     /**
@@ -561,8 +600,11 @@ public class StudentCoachService {
     }
     private Map<String,Object> context(Session s,String text){return context(s,text,true);}
     private Map<String,Object> context(Session s,String text,boolean includeSyllabus){
-        Map<String,Object> payload=new LinkedHashMap<>();payload.put("scope","student");payload.put("subject",s.subject());payload.put("message",text);payload.put("capabilities",availableCapabilities(s.userId()));
-        List<Map<String,String>> history=new ArrayList<>();JsonNode messages=s.state().path("messages");for(int i=Math.max(0,messages.size()-10);i<messages.size();i++){var msg=messages.get(i);history.add(Map.of("role",msg.path("role").asText(),"text",msg.path("text").asText().substring(0,Math.min(6000,msg.path("text").asText().length()))));}payload.put("history",history);
+        Map<String,Object> payload=new LinkedHashMap<>();payload.put("scope","student");payload.put("title_pending",!s.state().path("titleGenerated").asBoolean());payload.put("subject",s.subject());payload.put("message",text);payload.put("capabilities",availableCapabilities(s.userId()));
+        List<Map<String,String>> history=new ArrayList<>();JsonNode messages=s.state().path("messages");int budget=Math.clamp(historyChars,6000,120000),count=Math.clamp(historyMessages,10,100);
+        for(int i=messages.size()-1;i>=0&&history.size()<count&&budget>0;i--){var msg=messages.get(i);String value=msg.path("text").asText();value=value.substring(0,Math.min(value.length(),Math.min(6000,budget)));budget-=value.length();history.addFirst(Map.of("role",msg.path("role").asText(),"text",value));}payload.put("history",history);
+        if(s.state().path("memory").path("summary").isString())payload.put("memory",Map.of("summary",s.state().path("memory").path("summary").asText()));
+        var topic=memory.context(s.userId(),s.state());if(topic!=null)payload.put("learning_topic",topic);
         if(s.state().hasNonNull("current")){
             JsonNode snapshot=s.state().path("current").path("snapshot");List<Map<String,String>> options=new ArrayList<>();for(JsonNode option:snapshot.path("options"))options.add(Map.of("key",option.path("key").asText(),"text_md",option.path("text_md").asText()));payload.put("question",Map.of("type",snapshot.path("type").asText(),"stem_md",snapshot.path("stem_md").asText(),"options",options));
         }
@@ -582,7 +624,7 @@ public class StudentCoachService {
     }
     private void validateTurn(Turn input){if(input==null||input.requestId()==null||input.action()==null||!Set.of("next","answer","chat").contains(input.action())||input.text()!=null&&input.text().length()>2000||input.keys()!=null&&input.keys().size()>8||input.action().equals("chat")&&(input.text()==null||input.text().isBlank()))throw new IllegalArgumentException();}
     private String requestFingerprint(Turn input){
-        try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(input)));}
+        try{ObjectNode payload=(ObjectNode)json.valueToTree(input);if(input.draft()==null)payload.remove("draft");return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(payload)));}
         catch(java.security.NoSuchAlgorithmException failure){throw new IllegalStateException();}
     }
     private void checkSubject(String subject){if(!Set.of("vocational_aptitude","administrative_aptitude").contains(subject))throw new IllegalArgumentException();}

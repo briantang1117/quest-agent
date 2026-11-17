@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { IconDelete, IconMore } from '@arco-design/web-vue/es/icon'
 import {
+  ApiError,
   createCoachApi,
   createMaterialsApi,
   isActiveMaterial,
@@ -18,6 +19,7 @@ import {
 import SafeMarkdown from '../components/SafeMarkdown.vue'
 import CoachQuestionCard from '../components/CoachQuestionCard.vue'
 import MaterialCard from '../components/MaterialCard.vue'
+import CoachMemoryPanel from '../components/CoachMemoryPanel.vue'
 import { useMaterialPolling } from '../composables/material-polling'
 const auth = useAuthStore(),
   api = createCoachApi(auth),
@@ -183,7 +185,14 @@ async function load() {
   if (typeof id !== 'string') return
   loading.value = true
   try {
-    const value = await api.get(id, true)
+    const value =
+      route.query.draft === '1'
+        ? await api.create(
+            id,
+            'chat',
+            typeof route.query.topic === 'string' ? route.query.topic : undefined,
+          )
+        : await api.get(id, true)
     if (alive && currentRevision === revision) {
       session.value = value
       materials.value = value.materials ?? []
@@ -240,6 +249,8 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     action,
     text: action === 'chat' ? text.trim() : '',
   }
+  if (session.value.persisted === false)
+    payload.draft = { topicId: session.value.topic?.id ?? null }
   if (action === 'answer') {
     payload.questionId = current.value?.id
     payload.keys = [...selected.value]
@@ -263,6 +274,12 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     if (!isCurrent()) return
     const follow = nearBottom()
     session.value = value
+    if (value.persisted !== false && route.query.draft === '1') {
+      const query = { ...route.query }
+      delete query.draft
+      delete query.topic
+      void router.replace({ path: route.path, query })
+    }
     // 普通轮次快照可能早于资料轮询；不让旧状态覆盖已经完成的卡片。
     for (const item of value.materials ?? []) {
       const existing = materials.value.find((material) => material.id === item.id)
@@ -341,7 +358,11 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
         }
         selected.value = selectionFor(value)
       } catch (recoveryError) {
-        if (isCurrent()) notifyError(recoveryError)
+        if (
+          isCurrent() &&
+          !(payload.draft && recoveryError instanceof ApiError && recoveryError.status === 404)
+        )
+          notifyError(recoveryError)
       }
     }
     if (isCurrent() && action === 'chat' && !confirmed) draft.value = text
@@ -366,14 +387,22 @@ function onComposerKeydown(event: KeyboardEvent) {
   event.preventDefault()
   void send('chat')
 }
-async function newChat() {
+async function newChat(topicId?: string) {
   if (busy.value) return
   const expectedRevision = revision
   busy.value = true
   try {
-    const value = await api.create(crypto.randomUUID(), 'chat')
+    const value = await api.create(crypto.randomUUID(), 'chat', topicId)
     if (alive && revision === expectedRevision)
-      await router.push({ path: '/practice/agent', query: { session: value.id } })
+      await router.push({
+        path: '/practice/agent',
+        query: {
+          session: value.id,
+          ...(value.persisted === false
+            ? { draft: '1', ...(topicId ? { topic: topicId } : {}) }
+            : {}),
+        },
+      })
   } catch (e) {
     if (alive && revision === expectedRevision) notifyError(e)
   } finally {
@@ -394,7 +423,7 @@ watch(
     <aside class="coach-sessions">
       <div class="coach-sessions-head">
         <h2>个人 Agent</h2>
-        <a-button size="small" :disabled="busy" @click="newChat">新对话</a-button>
+        <a-button size="small" :disabled="busy" @click="newChat()">新对话</a-button>
       </div>
       <RouterLink class="coach-subject-link" to="/practice/profile">{{
         session ? subjectLabel(session.subject) : '设置学习科目'
@@ -439,10 +468,20 @@ watch(
       <header class="coach-conversation-head">
         <div>
           <h1>{{ session?.title || '你的学习对话' }}</h1>
-          <span>{{ session ? subjectLabel(session.subject) : '答疑与练习，在同一段对话中' }}</span>
+          <span
+            >{{ session ? subjectLabel(session.subject) : '答疑与练习，在同一段对话中'
+            }}{{ session?.topic ? ` · ${session.topic.title}` : '' }}</span
+          >
         </div>
+        <CoachMemoryPanel
+          v-if="session && session.persisted !== false"
+          :session="session"
+          :disabled="loading || busy || session.processing"
+          @update="(value) => (session = value)"
+          @continue="newChat"
+        />
         <a-button
-          v-if="session && session.capabilities?.materials !== false"
+          v-if="session && session.persisted !== false && session.capabilities?.materials !== false"
           data-test="create-material"
           :loading="materialBusy"
           :disabled="loading || busy || session.processing || materials.some(isActiveMaterial)"
@@ -458,7 +497,7 @@ watch(
             <span>序</span>
             <h2>说说你想学什么。</h2>
             <p>可以从学习空间开始刷题，也可以新建对话，聊聊一个困惑的知识点。</p>
-            <a-button type="primary" :disabled="busy" @click="newChat">开始对话</a-button>
+            <a-button type="primary" :disabled="busy" @click="newChat()">开始对话</a-button>
           </div>
           <article
             v-for="message in session?.messages || []"
@@ -698,13 +737,20 @@ watch(
   flex-direction: column;
 }
 .coach-conversation-head {
+  flex-wrap: wrap;
+  gap: 12px;
   padding: 20px 24px;
   border-bottom: 1px solid var(--color-border-2);
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+.coach-conversation-head > div {
+  flex: 1;
+  min-width: 180px;
+}
 .coach-conversation-head h1 {
+  overflow-wrap: anywhere;
   font-size: 20px;
   margin: 0 0 4px;
   letter-spacing: 0;

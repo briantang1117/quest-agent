@@ -68,7 +68,7 @@ class CoachWorkflowTest {
         if(deleted)db.update("UPDATE public_question SET deleted_at=CURRENT_TIMESTAMP,deleted_by=? WHERE id=?",actor,q);
         return q;
     }
-    JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode),200);}
+    JsonNode create(String token,UUID id,String mode)throws Exception{return postData("/api/v1/coach/sessions",token,Map.of("requestId",id,"mode",mode,"preview",false),200);}
 
     JsonNode callback(String grant,String step,List<String> keys)throws Exception{
         String body=json.writeValueAsString(Map.of("grant",grant,"step",step,"keys",keys));
@@ -244,6 +244,27 @@ class CoachWorkflowTest {
             stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action",action,"text","解释知识点"));
         }
         assertThat(retrieves.get()).isEqualTo(1);
+    }
+
+    @Test void completeWorkflowStoresMemoryAndFailurePreservesPriorSummary()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        org.mockito.Mockito.doAnswer(call->{java.util.function.Consumer<String> sink=call.getArgument(3);sink.accept("完整讲解");return json.readTree("{\"kind\":\"explain\",\"items\":[],\"memory\":{\"summary\":\"已经讨论过的知识结论\",\"progress\":\"\",\"questions\":\"\",\"plan\":\"\"}}");}).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var state=stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","请解释"));assertThat(state.path("memory").path("summary").asText()).isEqualTo("已经讨论过的知识结论");
+        org.mockito.Mockito.doAnswer(call->{java.util.function.Consumer<String> sink=call.getArgument(3);sink.accept("半截新正文");throw new UserFailure(503,50203,"interrupted");}).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var failed=stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","继续"));assertThat(failed.path("memory")).isEqualTo(state.path("memory"));assertThat(failed.path("messages").toString()).doesNotContain("半截新正文");
+    }
+
+    @Test void firstDraftWorkflowDoesNotDuplicateUserAndCommitsGeneratedTitle()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();
+        org.mockito.Mockito.doAnswer(call->{
+            JsonNode payload=json.valueToTree(call.getArgument(0));assertThat(payload.path("context").path("title_pending").asBoolean()).isTrue();
+            var context=callback(payload.path("grant").asText(),"context",List.of());assertThat(context.path("code").asInt()).isZero();
+            java.util.function.Consumer<String> sink=call.getArgument(3);sink.accept("完整概念讲解");return json.readTree("{\"kind\":\"explain\",\"items\":[],\"title\":\"考纲重点与复习安排\"}");
+        }).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var input=Map.<String,Object>of("requestId",UUID.randomUUID(),"action","chat","text","考纲重点怎么安排复习","draft",Map.of());
+        var state=stream(alice,session,input);int count=0;for(var message:state.path("messages"))if(message.path("role").asText().equals("user"))count++;assertThat(count).isEqualTo(1);
+        assertThat(state.path("titleGenerated").asBoolean()).isTrue();assertThat(db.queryForObject("SELECT title FROM student_coach_session WHERE id=?",String.class,session)).isEqualTo("考纲重点与复习安排");
+        stream(alice,session,input);org.mockito.Mockito.verify(ai,org.mockito.Mockito.times(1)).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
     }
 
 }
