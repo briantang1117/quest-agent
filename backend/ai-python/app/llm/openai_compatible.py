@@ -59,13 +59,26 @@ class OpenAICompatibleProvider:
             headers={"Authorization": f"Bearer {settings.llm_api_key.get_secret_value()}"},
         )
 
+    async def generate_private(self, messages):
+        budget = self._settings.private_max_output_tokens
+        body = {"messages": messages, "max_tokens": budget}
+        async with meter_call(self._settings, body, self._settings.llm_model) as meter:
+            return await self._generate_json(
+                messages, background=True, meter=meter, max_tokens=budget
+            )
+
     async def generate_json(self, messages, *, background=False):
         body = {"messages": messages, "max_tokens": self._settings.llm_max_tokens}
         async with meter_call(self._settings, body, self._settings.llm_model) as meter:
             return await self._generate_json(messages, background=background, meter=meter)
 
     async def _generate_json(
-        self, messages: list[dict[str, str]], *, background: bool = False, meter=None
+        self,
+        messages: list[dict[str, str]],
+        *,
+        background: bool = False,
+        meter=None,
+        max_tokens=None,
     ) -> str:
         try:
             if meter:
@@ -77,7 +90,7 @@ class OpenAICompatibleProvider:
                     "messages": messages,
                     "response_format": {"type": "json_object"},
                     "temperature": self._settings.llm_temperature,
-                    "max_tokens": self._settings.llm_max_tokens,
+                    "max_tokens": max_tokens or self._settings.llm_max_tokens,
                 },
                 timeout=self._settings.background_timeout if background else None,
             )

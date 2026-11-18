@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"spring.config.import=","spring.datasource.url=jdbc:h2:mem:workflow;MODE=PostgreSQL;DB_CLOSE_DELAY=-1","spring.datasource.username=sa","spring.datasource.password=","spring.flyway.enabled=false","spring.autoconfigure.exclude=com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration","quest.persistence.mode=postgresql","INTERNAL_SERVICE_TOKEN=workflow-token","INTERNAL_HMAC_SECRET=workflow-hmac-secret-at-least-32-bytes","quest.security.jwt.secret=student-coach-test-secret-at-least-32-bytes","quest.security.login.account-limit=100","quest.security.login.source-limit=1000"})
+@SpringBootTest(properties={"spring.config.import=","spring.datasource.url=jdbc:h2:mem:workflow;MODE=PostgreSQL;DB_CLOSE_DELAY=-1","spring.datasource.username=sa","spring.datasource.password=","spring.flyway.enabled=false","spring.autoconfigure.exclude=com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration","quest.persistence.mode=postgresql","quest.private-questions.processing-enabled=false","INTERNAL_SERVICE_TOKEN=workflow-token","INTERNAL_HMAC_SECRET=workflow-hmac-secret-at-least-32-bytes","quest.security.jwt.secret=student-coach-test-secret-at-least-32-bytes","quest.security.login.account-limit=100","quest.security.login.source-limit=1000"})
 @ActiveProfiles("test") @AutoConfigureMockMvc
 class CoachWorkflowTest {
     @Autowired MockMvc mvc; @Autowired JdbcTemplate db; @Autowired ObjectMapper json;
@@ -32,7 +32,7 @@ class CoachWorkflowTest {
         db.execute("DROP ALL OBJECTS");db.execute("CREATE ROLE quest_app");db.execute("CREATE ROLE quest_ai");db.execute("CREATE SEQUENCE app_user_id_seq");db.execute("CREATE SEQUENCE audit_log_id_seq");
         db.execute("CREATE TABLE app_user(id BIGSERIAL PRIMARY KEY,username VARCHAR(64) UNIQUE NOT NULL,password_hash VARCHAR(128) NOT NULL,display_name VARCHAR(128) NOT NULL,status VARCHAR(16) DEFAULT 'active',created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");
         db.execute("CREATE TABLE audit_log(id BIGSERIAL PRIMARY KEY,actor BIGINT,action VARCHAR(64),target_type VARCHAR(64),target_id VARCHAR(64),before_data JSONB,after_data JSONB,ip VARCHAR(45),user_agent TEXT,trace_id VARCHAR(64),ai_job_id BIGINT,created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)");TestUserSchema.applyV4(db);
-        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql","V12__student_coach_session_soft_delete.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
+        for(String file:List.of("V5__public_banks_and_imports.sql","V6__public_pdf_batches.sql","V7__public_question_soft_delete.sql","V8__student_coach.sql","V9__ai_call_audit.sql","V10__syllabus_versions.sql","V12__student_coach_session_soft_delete.sql","V16__private_question_pool.sql")){String sql=h2(new String(new ClassPathResource("db/migration/"+file).getInputStream().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));new ResourceDatabasePopulator(new org.springframework.core.io.ByteArrayResource(sql.getBytes(java.nio.charset.StandardCharsets.UTF_8))).execute(db.getDataSource());}
         var bcrypt=new BCryptPasswordEncoder();for(String name:List.of("admin","alice","bob"))db.update("INSERT INTO app_user(username,password_hash,display_name,account_type,must_change_password) VALUES (?,?,?,?,FALSE)",name,bcrypt.encode(PASSWORD),name,name.equals("admin")?"admin":"student");
         var chatReply=json.readTree("{\"action\":\"chat\",\"keys\":[],\"reply\":\"我们一起理解这个知识点。\"}");
         // Service 走带归因的三参重载，两参重载仅为兼容保留，两者都要打桩。
@@ -108,6 +108,7 @@ class CoachWorkflowTest {
         }).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
         var state=stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","answer","questionId",initial.path("currentQuestion").path("id").asText(),"keys",List.of("B")));
         assertThat(state.path("result").path("correct").asBoolean()).isTrue();assertThat(state.path("messages").toString()).contains("作答已保存").doesNotContain("PARTIAL_BODY");
+        var failedReply=state.path("messages").get(state.path("messages").size()-1);assertThat(failedReply.path("retryText").asText()).contains("已保存的作答和判分");
     }
     @Test void chatCannotSubmitAnswerButCanSuggestConfirmation()throws Exception{
         String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);UUID session=UUID.randomUUID();create(alice,session,"practice");
@@ -267,4 +268,25 @@ class CoachWorkflowTest {
         stream(alice,session,input);org.mockito.Mockito.verify(ai,org.mockito.Mockito.times(1)).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
     }
 
+
+    @Test void privateImportCallbackIsIdempotentAndPersistsSessionReference()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        org.mockito.Mockito.doAnswer(call->{JsonNode payload=json.valueToTree(call.getArgument(0));String grant=payload.path("grant").asText();var first=callback(grant,"create_private_import",List.of());assertThat(first.path("code").asInt()).isZero();assertThat(callback(grant,"create_private_import",List.of()).path("data")).isEqualTo(first.path("data"));return json.readTree("{\"kind\":\"state_only\",\"items\":[]}");}).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var response=stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","帮我导入题目\n一加一 A.二 B.三"));assertThat(response.path("privateImports").size()).isEqualTo(1);assertThat(db.queryForObject("SELECT COUNT(*) FROM private_import",Integer.class)).isEqualTo(1);assertThat(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,session)).contains(response.path("privateImports").get(0).path("id").asText());
+    }
+    @Test void ordinaryComparisonCannotBecomePrivateImportThroughCallback()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");UUID session=UUID.randomUUID();create(alice,session,"chat");
+        org.mockito.Mockito.doAnswer(call->{JsonNode payload=json.valueToTree(call.getArgument(0));assertThat(callback(payload.path("grant").asText(),"create_private_import",List.of()).path("code").asInt()).isEqualTo(40960);throw new UserFailure(503,50203,"callback rejected");}).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        stream(alice,session,Map.of("requestId",UUID.randomUUID(),"action","chat","text","梳理知识点做个对比表"));assertThat(db.queryForObject("SELECT COUNT(*) FROM private_import",Integer.class)).isZero();
+    }
+
+    @Test void insufficientTokensTellUserToContactAdminAndPreserveGrading()throws Exception{
+        String alice=token("alice");preference(alice,"vocational_aptitude");seed("vocational_aptitude","published",false);
+        for(boolean graded:List.of(false,true)){
+            UUID session=UUID.randomUUID();var initial=create(alice,session,graded?"practice":"chat");
+            org.mockito.Mockito.doAnswer(call->{if(graded){JsonNode payload=json.valueToTree(call.getArgument(0));assertThat(callback(payload.path("grant").asText(),"submit_answer",List.of("B")).path("code").asInt()).isZero();}throw new UserFailure(402,40240,"额度拦截");}).when(ai).workflow(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+            var input=new LinkedHashMap<String,Object>();input.put("requestId",UUID.randomUUID());input.put("action",graded?"answer":"chat");if(graded){input.put("questionId",initial.path("currentQuestion").path("id").asText());input.put("keys",List.of("B"));}else input.put("text","解释知识点");
+            var state=stream(alice,session,input);var messages=state.path("messages");assertThat(messages.get(messages.size()-1).path("text").asText()).contains("Token 余额不足，请联系管理员充值后重试。");if(graded){assertThat(state.hasNonNull("result")).isTrue();assertThat(messages.get(messages.size()-1).path("text").asText()).contains("作答已保存");}
+        }
+    }
 }

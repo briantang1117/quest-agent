@@ -13,6 +13,8 @@ public final class CoachCapabilities {
         +"|(?:整理|总结|汇总|转换|转|做|写|归纳).{0,40}(?:成|为|一份|一个|一篇).{0,8}"+ARTIFACT
         +"|(?:整理|生成|制作)(?:一份)?(?:学习资料|复习材料)",Pattern.CASE_INSENSITIVE);
     private static final Pattern INLINE=Pattern.compile("(?:只在|只要|只需).{0,8}(?:聊天|对话|这里).{0,8}(?:回答|展示|输出)|(?:不要|不用|无需).{0,8}(?:文件|文档|PDF|Markdown)",Pattern.CASE_INSENSITIVE);
+    private static final Pattern PRIVATE_IMPORT=Pattern.compile("(?:记下|记住|收录|保存|导入|加入).{0,24}(?:这道题|这些题|题目|错题|题库)|(?:帮我|请).{0,8}导入.{0,12}题");
+    public static boolean requestsPrivateImport(String text){return text!=null&&!Pattern.compile("(?:不要|不必|不用|别).{0,12}(?:导入|记下|保存)|(?:导入|记下).{0,12}(?:什么意思|怎么用|可以吗|能否)|(?:能不能|能否|如何|怎么).{0,12}(?:导入|记下)").matcher(text).find()&&PRIVATE_IMPORT.matcher(text).find();}
     public static boolean requestsDocument(String text){return text!=null&&!INLINE.matcher(text).find()&&DOCUMENT.matcher(text).find();}
     public static boolean allowsSuggestion(JsonNode item,Map<String,Boolean> capabilities){
         String required=item.path("required_feature").asText("");

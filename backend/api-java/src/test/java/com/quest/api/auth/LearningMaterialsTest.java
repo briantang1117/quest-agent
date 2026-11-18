@@ -51,6 +51,16 @@ class LearningMaterialsTest {
         return post(path).contentType("application/json").content(body).header("X-Service-Token","material-test-token").header("X-Timestamp",stamp).header("X-Nonce",nonce).header("X-Signature",sig);
     }
     JsonNode internal(String suffix,Object body)throws Exception{return json.readTree(mvc.perform(signed("/internal/materials/"+suffix,body)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");}
+    @Test void buttonCreationPersistsOneLinkedAssistantCardWithoutModelCall()throws Exception{
+        String alice=token("alice");UUID source=source("alice"),request=UUID.randomUUID();
+        JsonNode created=create(source,alice,request);create(source,alice,request);create(source,alice,UUID.randomUUID());
+        var state=json.readTree(db.queryForObject("SELECT state_json FROM student_coach_session WHERE id=?",String.class,source));
+        assertThat(state.path("messages").size()).isEqualTo(3);
+        var notice=state.path("messages").get(2);assertThat(notice.path("role").asText()).isEqualTo("assistant");assertThat(notice.path("materialId").asText()).isEqualTo(created.path("id").asText());assertThat(notice.path("materialNotice").asBoolean()).isTrue();
+        assertThat(created.path("sourceMessageId").asText()).isEqualTo("m2");
+        var snapshot=json.readTree(db.queryForObject("SELECT snapshot_json FROM learning_material WHERE id=?",String.class,UUID.fromString(created.path("id").asText())));
+        assertThat(snapshot.size()).isEqualTo(2);org.mockito.Mockito.verifyNoInteractions(ai);
+    }
     @Test void pdfDownloadChecksOwnershipReadinessAndFormatBeforeRendering()throws Exception{
         String alice=token("alice"),bob=token("bob");
         JsonNode material=create(source("alice"),alice,UUID.randomUUID());String id=material.path("id").asText();

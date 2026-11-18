@@ -47,6 +47,7 @@ public class LearningMaterialService {
             var rows=db().queryForList("SELECT * FROM student_coach_session WHERE id=? AND user_id=? FOR UPDATE",source,user);if(rows.isEmpty())throw missing();
             replay=replay(user,input.requestId(),hash);if(replay!=null)return replay;
             if(rows.getFirst().get("deleted_at")!=null)throw missing();
+            if(excludedMessage==null&&rows.getFirst().get("processing_request")!=null)throw new UserFailure(409,40932,"上一条消息仍在处理中，请稍后创建资料");
             var active=db().queryForList("SELECT id FROM learning_material WHERE session_id=? AND user_id=? AND status IN ('queued','processing') ORDER BY created_at",source,user);
             UUID id;
             if(!active.isEmpty())id=(UUID)active.getFirst().get("id");
@@ -59,6 +60,17 @@ public class LearningMaterialService {
                 id=UUID.randomUUID();UUID generation=UUID.randomUUID(),event=UUID.randomUUID();String title=(String)sourceRow.get("title");
                 db().update("INSERT INTO learning_material(id,user_id,session_id,source_title,subject,title,status,instructions,snapshot_json,generation,event_id) VALUES (?,?,?,?,?,?,'queued',?,?,?,?)",id,user,source,title,sourceRow.get("subject"),title+" · 学习资料",instructions,snapshot,generation,event);
                 enqueue(id,generation,event);
+            }
+            if(excludedMessage==null){
+                var state=(tools.jackson.databind.node.ObjectNode)json.readTree((String)rows.getFirst().get("state_json"));
+                var messages=state.withArray("messages");boolean linked=false;
+                for(var message:messages)if(message.path("materialId").asText().equals(id.toString())){linked=true;break;}
+                if(!linked){
+                    messages.addObject().put("id",UUID.randomUUID().toString()).put("role","assistant")
+                        .put("text","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。")
+                        .put("materialNotice",true).put("materialId",id.toString());
+                    db().update("UPDATE student_coach_session SET state_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",json.writeValueAsString(state),source,user);
+                }
             }
             db().update("INSERT INTO learning_material_request(user_id,request_id,request_hash,material_id) VALUES (?,?,?,?)",user,input.requestId(),hash,id);
             return getOwned(user,id,false);
@@ -86,7 +98,7 @@ public class LearningMaterialService {
     public Map<String,Object> get(SessionIdentity identity,String id){return transaction(()->getOwned(owner(identity),UUID.fromString(id),true));}
     Map<String,Object> getOwned(long user,UUID id,boolean body){var result=db().query("SELECT m.*,s.deleted_at AS source_deleted FROM learning_material m JOIN student_coach_session s ON s.id=m.session_id AND s.user_id=m.user_id WHERE m.id=? AND m.user_id=?",(rs,n)->view(rs,body),id,user);if(result.isEmpty())throw missing();return result.getFirst();}
     private Map<String,Object> view(ResultSet rs,boolean body)throws java.sql.SQLException{
-        var out=new LinkedHashMap<String,Object>();out.put("id",rs.getString("id"));out.put("sessionId",rs.getString("session_id"));out.put("sourceTitle",rs.getString("source_title"));out.put("sourceDeleted",rs.getObject("source_deleted")!=null);out.put("subject",rs.getString("subject"));out.put("title",rs.getString("title"));out.put("status",rs.getString("status"));out.put("format",rs.getString("format"));out.put("createdAt",rs.getObject("created_at",OffsetDateTime.class).toString());out.put("updatedAt",rs.getObject("updated_at",OffsetDateTime.class).toString());out.put("error",rs.getString("error"));if(body&&"ready".equals(rs.getString("status")))out.put("markdown",rs.getString("markdown"));return out;
+        var out=new LinkedHashMap<String,Object>();out.put("id",rs.getString("id"));out.put("sessionId",rs.getString("session_id"));out.put("sourceTitle",rs.getString("source_title"));out.put("sourceDeleted",rs.getObject("source_deleted")!=null);out.put("subject",rs.getString("subject"));out.put("title",rs.getString("title"));out.put("status",rs.getString("status"));out.put("format",rs.getString("format"));out.put("createdAt",rs.getObject("created_at",OffsetDateTime.class).toString());out.put("updatedAt",rs.getObject("updated_at",OffsetDateTime.class).toString());out.put("error",rs.getString("error"));var snapshot=json.readTree(rs.getString("snapshot_json"));if(snapshot.isArray()&&!snapshot.isEmpty()){String anchor=snapshot.get(snapshot.size()-1).path("id").asText();if(!anchor.isBlank())out.put("sourceMessageId",anchor);}if(body&&"ready".equals(rs.getString("status")))out.put("markdown",rs.getString("markdown"));return out;
     }
     public Map<String,Object> retry(SessionIdentity identity,String material,UUID request){
         if(request==null)throw new IllegalArgumentException();if(!enabled)throw new UserFailure(503,50341,"学习资料生成尚未启用");UUID id=UUID.fromString(material);

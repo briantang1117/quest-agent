@@ -15,3 +15,5 @@ export * from './syllabus-api'
 export * from './materials-api'
 
 export * from './admin-control-api'
+
+export * from './private-questions-api'

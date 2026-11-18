@@ -17,6 +17,7 @@ from app.api.coach import router as coach_router
 from app.api.coach_workflow import router as coach_workflow_router
 from app.api.materials import router as materials_router
 from app.api.pdf_import import router as pdf_import_router
+from app.api.private_questions import router as private_questions_router
 from app.api.public_import import router as public_import_router
 from app.api.routes import router
 from app.api.syllabus import router as syllabus_router
@@ -27,7 +28,7 @@ from app.core.errors import ServiceError, error_response
 from app.core.security import NonceStore, authenticate
 from app.llm.base import LLMProvider
 from app.llm.openai_compatible import OpenAICompatibleProvider
-from app.providers.ark import ArkEmbeddingProvider
+from app.providers.ark import ArkEmbeddingProvider, ArkOCRProvider
 from app.providers.deepseek import DeepSeekFetchProvider, DeepSeekSearchProvider
 
 
@@ -50,6 +51,7 @@ def create_app(
     embedding_provider: ArkEmbeddingProvider | None = None,
     search: DeepSeekSearchProvider | None = None,
     fetch: DeepSeekFetchProvider | None = None,
+    ocr: ArkOCRProvider | None = None,
 ) -> FastAPI:
     config = settings if settings is not None else Settings()
 
@@ -60,6 +62,7 @@ def create_app(
             application.state.provider = OpenAICompatibleProvider(config)
         application.state.search_provider = search
         application.state.fetch_provider = fetch
+        application.state.ocr_provider = ocr
         application.state.embedding_provider = embedding_provider
         resources = AsyncExitStack()
         workflow_client = CoachWorkflowClient(config)
@@ -79,6 +82,8 @@ def create_app(
                 application.state.embedding_provider = ArkEmbeddingProvider(config)
             if search is None and config.search_configured:
                 application.state.search_provider = DeepSeekSearchProvider(config)
+            if ocr is None and config.ocr_configured:
+                application.state.ocr_provider = ArkOCRProvider(config)
             if fetch is None and config.fetch_configured:
                 application.state.fetch_provider = DeepSeekFetchProvider(config)
             application.state.candidate_graph = (
@@ -106,6 +111,8 @@ def create_app(
             application.state.extraction_graph = None
             application.state.candidate_graph = None
             application.state.coach_graph = None
+            if application.state.ocr_provider is not None:
+                await application.state.ocr_provider.aclose()
             if application.state.embedding_provider is not None:
                 await application.state.embedding_provider.aclose()
             if application.state.search_provider is not None:
@@ -183,6 +190,7 @@ def create_app(
         return {"status": "alive"}
 
     application.include_router(router)
+    application.include_router(private_questions_router)
     application.include_router(coach_router)
     application.include_router(coach_workflow_router)
     application.include_router(materials_router)

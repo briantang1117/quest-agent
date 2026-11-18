@@ -310,3 +310,35 @@ it('扩展预算后接受更多来源，但仍限制消息来源数量', async (
     streamTurn(session.id, turn, options(fetchEvents([['done', tooMany]]))),
   ).rejects.toThrow()
 })
+it('保留导入任务所属的AI消息标识，拒绝畸形关联字段', async () => {
+  const value = {
+    ...session,
+    messages: [{ id: 'notice', role: 'assistant', text: '已开始导入', privateImportId: 'job-1' }],
+  }
+  const callbacks = options(fetchEvents([['done', value]]))
+  await streamTurn(session.id, turn, callbacks)
+  expect(callbacks.onDone).toHaveBeenCalledWith(value)
+  const invalid = {
+    ...value,
+    messages: [{ ...value.messages[0], privateImportId: { id: 'job-1' } }],
+  }
+  await expect(
+    streamTurn(session.id, turn, options(fetchEvents([['done', invalid]]))),
+  ).rejects.toThrow('无效的陪练会话事件')
+})
+
+it('保留失败回复的重试文本，拒绝畸形重试字段', async () => {
+  const value = {
+    ...session,
+    messages: [{ id: 'failed', role: 'assistant', text: '讲解失败', retryText: '请重新讲解' }],
+  }
+  const callbacks = options(fetchEvents([['done', value]]))
+  await streamTurn(session.id, turn, callbacks)
+  expect(callbacks.onDone).toHaveBeenCalledWith(value)
+  for (const retryText of [true, '', '字'.repeat(2001)]) {
+    const invalid = { ...value, messages: [{ ...value.messages[0], retryText }] }
+    await expect(
+      streamTurn(session.id, turn, options(fetchEvents([['done', invalid]]))),
+    ).rejects.toThrow('无效的陪练会话事件')
+  }
+})

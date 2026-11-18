@@ -1,13 +1,15 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import ArcoVue from '@arco-design/web-vue'
 import { installErrorFeedback, useAuthStore, type Material } from '@quest/shared'
 import { createAppRouter } from '../router'
 import LearningMaterialsView from '../views/LearningMaterialsView.vue'
 import MaterialCard from '../components/MaterialCard.vue'
 import App from '../App.vue'
+import PrivateQuestionContent from '../components/PrivateQuestionContent.vue'
+import type { PrivateResult } from '@quest/shared'
 
 const wrappers: VueWrapper[] = []
 afterEach(async () => {
@@ -246,4 +248,74 @@ it('轮询错误停止且可人工刷新，不自动重试付费或无限刷新�
   } finally {
     dispose()
   }
+})
+it('私有题库切换分类后才查询，默认整理文档保持独立', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: false, addListener() {}, removeListener() {} }))
+  const { wrapper, request } = await render((c) =>
+    c.url === '/api/v1/study/private-questions'
+      ? { list: [], total: 0, page: 1, size: 20 }
+      : { list: [] },
+  )
+  expect(request.mock.calls.some(([c]) => c.url === '/api/v1/study/private-questions')).toBe(false)
+  const tab = wrapper.findAll('.arco-tabs-tab').find((item) => item.text() === '私有题库')!
+  await tab.trigger('click')
+  await flushPromises()
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({ url: '/api/v1/study/private-questions' }),
+  )
+  expect(wrapper.text()).toContain('去 Agent 导入')
+})
+
+it('已收录题目隐藏整理备注，待核实题目继续展示疑点', async () => {
+  const result: PrivateResult = {
+    candidate: {
+      type: 'single_choice',
+      stem_md: '逻辑判断题目',
+      options: [
+        { key: 'A', text_md: '甲' },
+        { key: 'B', text_md: '乙' },
+      ],
+      original_keys: ['A'],
+      original_answer_quote: '',
+      original_explanation: '',
+      personal_keys: [],
+      requires_image: false,
+      issues: [],
+      page_numbers: [12],
+    },
+    answer_keys: ['A'],
+    explanation_md: '解析',
+    memory_tip: '记忆方法',
+    issues: ['本题共用材料，已重复以保持题目自足'],
+    status: 'ready',
+    answer_source: 'original_checked',
+    web_verified: false,
+    web_sources: [],
+    source: {
+      session_id: 'session-1',
+      import_id: 'import-1',
+      asset_id: 'asset-1',
+      filename: '逻辑判断.pdf',
+    },
+  }
+  const pinia = createPinia()
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      { path: '/', component: { template: '<div />' } },
+      { path: '/practice/agent', component: { template: '<div />' } },
+    ],
+  })
+  await router.push('/')
+  const wrapper = mount(PrivateQuestionContent, {
+    props: { result, showConversation: true },
+    global: { plugins: [pinia, router, ArcoVue] },
+  })
+  wrappers.push(wrapper)
+  expect(wrapper.text()).not.toContain(result.issues[0])
+  expect(wrapper.get('a[href="/practice/agent?session=session-1"]').text()).toContain(
+    '回到 Agent 对话',
+  )
+  await wrapper.setProps({ result: { ...result, status: 'needs_attention' } })
+  expect(wrapper.text()).toContain(result.issues[0])
 })

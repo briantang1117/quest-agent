@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.agent.coach_capabilities import (
+    PRIVATE_IMPORT_PROMPT,
     SUGGESTION_CAPABILITY_PROMPT,
     filter_suggestions,
     normalize_intent,
@@ -59,6 +60,8 @@ class CoachReply(BaseModel):
     def title_update(cls, value):
         return clean_title(value)
 
+    private_item_id: str | None = Field(default=None, pattern=r"^[0-9a-f-]{36}$")
+    private_decision: Literal["use_suggestion", "keep_original", "exclude"] | None = None
     memory: dict | None = None
 
     @field_validator("memory", mode="before")
@@ -69,7 +72,9 @@ class CoachReply(BaseModel):
     # 只取 action/keys/reply/suggestions：模型偶尔多回 correct、answer_keys 之类的元信息，
     # 这类多余字段不该让整轮陪练失败（真实故障率约一半），但也不能被当成答案采用。
     model_config = ConfigDict(extra="ignore")
-    action: Literal["next", "answer", "chat", "clarify", "material"]
+    action: Literal[
+        "next", "answer", "chat", "clarify", "material", "private_import", "private_decision"
+    ]
     keys: list[Literal["A", "B", "C", "D", "E", "F", "G", "H"]] = Field(max_length=8)
     reply: str = Field(min_length=1, max_length=6000)
     suggestions: list[dict] = Field(default_factory=list, max_length=4)
@@ -88,6 +93,10 @@ class CoachReply(BaseModel):
 
     @model_validator(mode="after")
     def answer_keys(self):
+        if self.action == "private_decision" and (
+            self.private_item_id is None or self.private_decision is None
+        ):
+            raise ValueError("缺少疑点题目标或操作")
         if len(set(self.keys)) != len(self.keys) or (self.action == "answer") != bool(self.keys):
             raise ValueError("答案意图与选项不匹配")
         return self
@@ -119,8 +128,9 @@ def build_coach_graph(provider: LLMProvider):
                         "action只能是next或chat；label不超过20字，chat时text为用户将要发送的话。"
                         "建议要贴合当前场景：纯答疑时不要硬推下一题；已判分且有新题时可给next。"
                         "建议只是候选，是否可用由Java判定。"
-                        "回复JSON，包含action(next/answer/chat/clarify/material)、keys(仅answer时非空)、reply、suggestions。"
+                        "回复JSON，包含action(next/answer/chat/clarify/material/private_import/private_decision)、keys(仅answer时非空)、reply、suggestions。"
                         + SUGGESTION_CAPABILITY_PROMPT
+                        + PRIVATE_IMPORT_PROMPT
                         + MATERIAL_INTENT_PROMPT
                         + SYLLABUS_PROMPT
                         + MEMORY_PROMPT

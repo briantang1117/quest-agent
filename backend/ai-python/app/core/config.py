@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = Field(default=30, gt=0, le=300)
     background_llm_timeout_seconds: float = Field(default=180, gt=0, le=600)
     llm_temperature: float = Field(default=0, ge=0, le=2)
+    # 图片使用独立预占预算，不把Base64字节当文本token；实际仍按供应商usage结算。
+    ocr_image_reservation_tokens: int = Field(default=32768, ge=1024, le=1_000_000)
+    private_max_output_tokens: int = Field(default=16384, ge=4096, le=32768)
     llm_max_tokens: int = Field(default=4096, ge=1, le=32768)
     coach_api_url: str = "http://127.0.0.1:8080"
     coach_checkpoint_path: str = "runtime/coach-checkpoints.sqlite"

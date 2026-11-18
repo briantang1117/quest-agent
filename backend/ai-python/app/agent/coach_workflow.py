@@ -51,6 +51,8 @@ def build_coach_workflow(checkpointer):
             "chat": "explain",
             "clarify": "clarify",
             "material": "create_material",
+            "private_import": "create_private_import",
+            "private_decision": "resolve_private",
         }[state["intent"]["action"]]
 
     def mutation(step):
@@ -59,6 +61,11 @@ def build_coach_workflow(checkpointer):
             kwargs = {}
             if step in {"suggest_answer", "clarify"}:
                 kwargs = {key: intent[key] for key in ("reply", "suggestions")}
+            if step == "resolve_private":
+                kwargs = {
+                    "privateItemId": intent["private_item_id"],
+                    "privateDecision": intent["private_decision"],
+                }
             if step == "suggest_answer":
                 kwargs["keys"] = intent["keys"]
             context = await business(runtime, step, **kwargs)
@@ -88,7 +95,15 @@ def build_coach_workflow(checkpointer):
     graph = StateGraph(WorkflowState, context_schema=WorkflowRuntime)
     graph.add_node("prepare", prepare)
     graph.add_node("route_intent", route)
-    for step in ("submit_answer", "next_question", "suggest_answer", "clarify", "create_material"):
+    for step in (
+        "submit_answer",
+        "next_question",
+        "suggest_answer",
+        "clarify",
+        "create_material",
+        "create_private_import",
+        "resolve_private",
+    ):
         graph.add_node(step, mutation(step))
     graph.add_node("explain", explain)
     graph.add_node("finish", finish)
@@ -96,7 +111,15 @@ def build_coach_workflow(checkpointer):
     graph.add_conditional_edges("prepare", dispatch)
     graph.add_conditional_edges("route_intent", intent_edge)
     graph.add_edge("submit_answer", "explain")
-    for step in ("next_question", "suggest_answer", "clarify", "create_material", "explain"):
+    for step in (
+        "next_question",
+        "suggest_answer",
+        "clarify",
+        "create_material",
+        "create_private_import",
+        "resolve_private",
+        "explain",
+    ):
         graph.add_edge(step, "finish")
     graph.add_edge("finish", END)
     return graph.compile(checkpointer=checkpointer)

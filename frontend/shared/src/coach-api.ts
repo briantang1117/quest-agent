@@ -1,4 +1,10 @@
 import type { useAuthStore } from './auth'
+import {
+  isPrivateAsset,
+  isPrivateJob,
+  type PrivateAsset,
+  type PrivateImportJob,
+} from './private-questions-api'
 import { streamPost } from './sse'
 import { isMaterial, type Material } from './materials-api'
 export type StudySubject = 'vocational_aptitude' | 'administrative_aptitude'
@@ -49,6 +55,13 @@ export interface CoachMessage {
   /** 只出现在最后一条消息上；前端循环渲染，不自造产品动作。 */
   suggestions?: CoachSuggestion[]
   sources?: CoachSource[]
+  attachments?: PrivateAsset[]
+  /** 导入任务归属于创建它的AI回复，进度通过会话快照和独立轮询更新。 */
+  privateImportId?: string
+  /** 用户主动重试失败回复时发送的聊天内容；不会重复提交答案。 */
+  retryText?: string
+  materialId?: string
+  materialNotice?: boolean
 }
 export interface LearningTopic {
   id: string
@@ -89,6 +102,7 @@ export interface CoachSession {
   syllabusVersionId?: string | null
   messages: CoachMessage[]
   materials?: Material[]
+  privateImports?: PrivateImportJob[]
   currentQuestion: CoachQuestion | null
   result: CoachResult | null
   suggestedKeys: string[]
@@ -101,6 +115,7 @@ export interface CoachSessionSummary {
   updatedAt: string
 }
 export interface CoachTurn {
+  attachments?: string[]
   draft?: { topicId: string | null }
   requestId: string
   action: 'next' | 'answer' | 'chat'
@@ -167,11 +182,12 @@ export function createCoachApi(auth: Pick<ReturnType<typeof useAuthStore>, 'requ
           ...(mode === 'chat' ? { preview: true } : {}),
         },
       }),
-    get: (id: string, silent = false) =>
+    get: (id: string, silent = false, signal?: AbortSignal) =>
       auth.request<CoachSession>({
         silent,
         method: 'GET',
         url: `/api/v1/coach/sessions/${encodeURIComponent(id)}`,
+        ...(signal ? { signal } : {}),
       }),
     remove: (id: string) =>
       auth.request<null>({
@@ -277,6 +293,8 @@ function isSession(value: unknown): value is CoachSession {
     strings(value.suggestedKeys) &&
     (value.materials === undefined ||
       (Array.isArray(value.materials) && value.materials.every(isMaterial))) &&
+    (value.privateImports === undefined ||
+      (Array.isArray(value.privateImports) && value.privateImports.every(isPrivateJob))) &&
     (value.currentQuestion === null || isQuestion(value.currentQuestion)) &&
     (value.result === null || isResult(value.result)) &&
     Array.isArray(value.messages) &&
@@ -289,7 +307,24 @@ function isSession(value: unknown): value is CoachSession {
         (item.question == null || isQuestion(item.question)) &&
         (item.result == null || isResult(item.result)) &&
         (item.suggestions == null || isSuggestions(item.suggestions)) &&
-        (item.sources == null || isSources(item.sources)),
+        (item.sources == null || isSources(item.sources)) &&
+        (item.materialId === undefined ||
+          (typeof item.materialId === 'string' &&
+            item.materialId.length > 0 &&
+            item.materialId.length <= 64)) &&
+        (item.materialNotice === undefined || typeof item.materialNotice === 'boolean') &&
+        (item.retryText === undefined ||
+          (typeof item.retryText === 'string' &&
+            item.retryText.trim().length > 0 &&
+            item.retryText.length <= 2000)) &&
+        (item.privateImportId === undefined ||
+          (typeof item.privateImportId === 'string' &&
+            item.privateImportId.length > 0 &&
+            item.privateImportId.length <= 64)) &&
+        (item.attachments === undefined ||
+          (Array.isArray(item.attachments) &&
+            item.attachments.length <= 4 &&
+            item.attachments.every(isPrivateAsset))),
     )
   )
 }

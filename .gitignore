@@ -27,3 +27,6 @@ local-data/
 .idea/
 .vscode/
 *.log
+
+# Java服务启动时的独立JAR副本和本机构建锁
+backend/runtime/java/

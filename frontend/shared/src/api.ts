@@ -48,7 +48,14 @@ export function createApiClient(options: { baseURL: string; getToken?: () => str
         if (
           response.status >= 200 &&
           response.status < 300 &&
-          ['application/pdf', 'text/markdown'].includes(contentType)
+          [
+            'application/pdf',
+            'text/markdown',
+            'text/plain',
+            'image/png',
+            'image/jpeg',
+            'image/webp',
+          ].includes(contentType)
         )
           return response.data as T
         const data: unknown = JSON.parse(await response.data.text())

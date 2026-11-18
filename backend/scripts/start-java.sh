@@ -23,8 +23,72 @@ fi
 if ! "$JAVA_HOME/bin/java" -version 2>&1 | grep -Eq 'version "27([.\"]|$)'; then
   printf '需要 JDK27；不会修改系统默认 Java。\n' >&2; exit 1
 fi
-# 从 backend 一次编译 common/API/Worker，避免 spring-boot:run 卡在非可运行common模块。
-# 默认打包并跳过测试；完整验收另执行 ./mvnw clean verify。
-bash "$BASE/mvnw" -B -ntp -DskipTests package
-exec "$JAVA_HOME/bin/java" -Xms128m -Xmx512m -jar "$BASE/$MODULE/target/$MODULE-0.1.0.jar" \
+# 构建共享common时也要串行，避免API/Worker同时启动互相改写target。
+# macOS自带shlock；Linux通常由util-linux提供flock。
+umask 077
+RUNTIME="$BASE/runtime/java"
+mkdir -p "$RUNTIME"
+LOCK_FILE="$RUNTIME/build.lock"
+LOCK_MODE=
+RUN_DIR=
+CHILD_PID=
+release_build_lock() {
+  if [[ "$LOCK_MODE" == fd ]]; then
+    flock -u 9 || true
+    exec 9>&-
+  elif [[ "$LOCK_MODE" == pid && -f "$LOCK_FILE" ]]; then
+    local owner
+    owner=$(cat "$LOCK_FILE")
+    if [[ "$owner" == "$$" ]]; then rm -f "$LOCK_FILE"; fi
+  fi
+  LOCK_MODE=
+}
+cleanup() {
+  release_build_lock
+  if [[ -n "$RUN_DIR" ]]; then
+    rm -f "$RUN_DIR/app.jar"
+    rmdir "$RUN_DIR" 2>/dev/null || true
+  fi
+}
+stop_child() {
+  trap '' INT TERM
+  if [[ -n "$CHILD_PID" ]]; then
+    kill -TERM "$CHILD_PID" 2>/dev/null || true
+    wait "$CHILD_PID" 2>/dev/null || true
+  fi
+  exit "$1"
+}
+trap cleanup EXIT
+trap 'stop_child 130' INT
+trap 'stop_child 143' TERM
+run_child() {
+  local status
+  "$@" &
+  CHILD_PID=$!
+  set +e
+  wait "$CHILD_PID"
+  status=$?
+  set -e
+  CHILD_PID=
+  return "$status"
+}
+if command -v flock >/dev/null 2>&1; then
+  LOCK_MODE=fd
+  exec 9>"$LOCK_FILE"
+  run_child flock 9
+elif command -v shlock >/dev/null 2>&1; then
+  LOCK_MODE=pid
+  until shlock -f "$LOCK_FILE" -p "$$"; do sleep 1; done
+else
+  printf '串行构建需要shlock（macOS自带）或flock（Linux util-linux）。\n' >&2
+  exit 1
+fi
+# 只打包当前服务及其依赖；默认跳过测试，完整验收另执行mvnw verify。
+run_child bash "$BASE/mvnw" -B -ntp -pl "$MODULE" -am -DskipTests package
+# 每次运行使用独立副本。后续打包、IDE编译或启动另一服务不改动已打开的JAR。
+RUN_DIR=$(mktemp -d "$RUNTIME/$MODULE.XXXXXX")
+cp "$BASE/$MODULE/target/$MODULE-0.1.0.jar" "$RUN_DIR/app.jar"
+release_build_lock
+printf '启动 %s（独立运行副本）\n' "$MODULE"
+run_child "$JAVA_HOME/bin/java" -Xms128m -Xmx512m -jar "$RUN_DIR/app.jar" \
   --spring.profiles.active=deployment

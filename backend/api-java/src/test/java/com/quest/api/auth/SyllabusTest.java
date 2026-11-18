@@ -154,6 +154,26 @@ class SyllabusTest {
         var body=json.readTree(mvc.perform(get("/api/v1/study/syllabus").param("subject","administrative_aptitude").param("examYear","2027").param("keyword","判断推理").header("Authorization","Bearer "+alice)).andExpect(status().isOk()).andReturn().getResponse().getContentAsString()).path("data");
         assertThat(body.path("retrievalMode").asText()).isEqualTo("keyword_fallback");assertThat(body.path("retrievalWarning").asText()).isNotBlank();assertThat(body.path("sections").size()).isEqualTo(1);
     }
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings={"provider","runtime","quota","index"})
+    void ragFailureIsSkippedAndCoachStillAnswers(String kind)throws Exception{
+        String admin=token("admin"),alice=token("alice");published(admin,2027);
+        mvc.perform(put("/api/v1/me/study-preference").header("Authorization","Bearer "+alice).contentType("application/json").content("{\"subject\":\"administrative_aptitude\",\"examYear\":2027}")).andExpect(status().isOk());
+        RuntimeException failure=switch(kind){
+            case "provider" -> new UserFailure(503,50342,"向量服务不可用");
+            case "quota" -> new UserFailure(402,40240,"Token余额不足");
+            case "index" -> new UserFailure(409,40942,"向量索引不兼容");
+            default -> new IllegalStateException("不得泄露的供应商错误");
+        };
+        org.mockito.Mockito.when(pipeline.retrieve(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyBoolean())).thenThrow(failure);
+        var session=create(alice,UUID.randomUUID(),"chat");
+        var reply=postData("/api/v1/coach/sessions/"+session.path("id").asText()+"/turns",alice,Map.of("requestId",UUID.randomUUID(),"action","chat","text","判断推理考什么"),200);
+        assertThat(reply.path("messages").toString()).contains("我们一起理解这个知识点");
+        var capture=org.mockito.ArgumentCaptor.forClass(Object.class);
+        org.mockito.Mockito.verify(ai).turn(capture.capture(),org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any());
+        var context=json.valueToTree(capture.getValue());assertThat(context.path("syllabus").isArray()).isTrue();assertThat(context.path("syllabus").isEmpty()).isTrue();
+        org.mockito.Mockito.verify(pipeline).retrieve(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.anyBoolean());
+    }
     @Test void naturalLanguageSyllabusOverviewUsesBoundVersionWithoutExactMatch()throws Exception{
         String admin=token("admin"),alice=token("alice");var pub=published(admin,2027);
         mvc.perform(put("/api/v1/me/study-preference").header("Authorization","Bearer "+alice).contentType("application/json").content("{\"subject\":\"administrative_aptitude\",\"examYear\":2027}")).andExpect(status().isOk());

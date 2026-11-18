@@ -7,26 +7,30 @@ function adapter(data: unknown, status = 200): AxiosAdapter {
 }
 
 describe('API client', () => {
-  it.each(['text/markdown; charset=utf-8', 'application/pdf'])(
-    '鉴权下载接受约定正文 %s',
-    async (contentType) => {
-      const blob = new Blob(['# 合成资料'], { type: contentType })
-      const client = createApiClient({ baseURL: '/gateway', getToken: () => 'token' })
-      let authorization: unknown
-      client.defaults.adapter = async (config) => {
-        authorization = config.headers.get('Authorization')
-        return {
-          data: blob,
-          status: 200,
-          statusText: 'OK',
-          headers: { 'content-type': contentType },
-          config,
-        }
+  it.each([
+    'text/markdown; charset=utf-8',
+    'application/pdf',
+    'text/plain',
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+  ])('鉴权下载接受约定正文 %s', async (contentType) => {
+    const blob = new Blob(['# 合成资料'], { type: contentType })
+    const client = createApiClient({ baseURL: '/gateway', getToken: () => 'token' })
+    let authorization: unknown
+    client.defaults.adapter = async (config) => {
+      authorization = config.headers.get('Authorization')
+      return {
+        data: blob,
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': contentType },
+        config,
       }
-      expect(await client.get('/download', { responseType: 'blob' })).toBe(blob)
-      expect(authorization).toBe('Bearer token')
-    },
-  )
+    }
+    expect(await client.get('/download', { responseType: 'blob' })).toBe(blob)
+    expect(authorization).toBe('Bearer token')
+  })
   it('Markdown下载错误envelope保留业务错误而非另存成文件', async () => {
     const client = createApiClient({ baseURL: '/gateway' })
     client.defaults.adapter = adapter(

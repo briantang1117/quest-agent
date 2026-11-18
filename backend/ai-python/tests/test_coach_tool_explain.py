@@ -100,3 +100,20 @@ def test_completed_fenced_json_tool_answer_only_delivers_inner_reply():
         response = send(client, {"scope": "student", "message": "说明政策"})
     assert text_of(response) == "政策概括"
     assert events(response)[-1][0] == "done"
+
+
+def test_completed_json_with_trailing_prose_is_recovered_without_another_call():
+    provider = ToolProvider(
+        [
+            [
+                {"type": "content", "text": chunk}
+                for chunk in ('{"reply":"政策讲解",', '"suggestions":[]}', "\n以上供复习参考。")
+            ]
+        ]
+    )
+    with TestClient(create_app(settings(), provider=provider)) as client:
+        response = send(client, {"scope": "student", "message": "说明政策"})
+    assert text_of(response) == "政策讲解"
+    assert events(response)[-1][0] == "done"
+    assert len(provider.requests) == 1
+    assert provider.legacy_calls == 0

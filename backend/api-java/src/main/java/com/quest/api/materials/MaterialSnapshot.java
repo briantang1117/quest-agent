@@ -34,7 +34,7 @@ final class MaterialSnapshot {
             if(!Set.of("user","assistant").contains(item.path("role").asText()))continue;
             ObjectNode clean=json.createObjectNode();
             for(String field:List.of("id","role","text","question","result"))if(item.hasNonNull(field))clean.set(field,item.get(field).deepCopy());
-            // 非学习状态通知不进入整理；卡片始终独立，不经过消息快照。
+            // 非学习状态通知不进入整理；卡片元数据不作为学习正文进入资料生成快照。
             if(item.path("materialNotice").asBoolean())continue;
             target.put(id,clean);
         }

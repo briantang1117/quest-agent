@@ -90,6 +90,15 @@ public class PublicAiClient {
             audit.record(caller==null?null:caller.actor(),"ai.material_generate",null,caller==null?null:caller.traceId(),input,output,failure,elapsed(started),1,null);
         }
     }
+    /** 私人题目原件与完整题干不进入管理员AI审计正文。 */
+    public JsonNode privateQuestions(String step,Object payload,Caller caller){
+        if(!Set.of("source","check").contains(step))throw new IllegalArgumentException();
+        long started=System.nanoTime();Throwable failure=null;JsonNode result=null;
+        var control=new com.quest.api.coach.CoachStreamControl();var deadline=DEADLINES.schedule(control::close,350,java.util.concurrent.TimeUnit.SECONDS);
+        try{result=doPost("/internal/private-"+step,payload,1024*1024,caller,"ai.private_"+step,started,Duration.ofSeconds(350),control);return result;}
+        catch(RuntimeException error){failure=error;throw error;}
+        finally{deadline.cancel(false);control.close();var input=json.createObjectNode().put("bytes",json.writeValueAsBytes(payload).length).put("sha256",com.quest.api.materials.MaterialDigest.of(json.writeValueAsBytes(payload)));var output=json.createObjectNode();if(result!=null)output.put("bytes",json.writeValueAsBytes(result).length);audit.record(caller.actor(),"ai.private_"+step,null,caller.traceId(),input,output,failure,elapsed(started),1,null);}
+    }
     private JsonNode post(String path,Object payload,int maxResponse){return post(path,payload,maxResponse,null);}
     private static final java.util.concurrent.ScheduledExecutorService DEADLINES=java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"coach-stream-deadline");t.setDaemon(true);return t;});
     /** 有界读取内部 SSE，截止时间覆盖响应头及响应体；任何出口都记录一次审计。 */
@@ -134,7 +143,7 @@ public class PublicAiClient {
                     if(ch!='\n'){if(ch!='\r')line.append((char)ch);if(line.length()>32768)throw new UserFailure(503,50204,"AI服务事件超出上限");continue;}
                     String value=line.toString();line.setLength(0);
                     if(value.isEmpty()){
-                        if(event.equals("error")){int code=json.readTree(data.toString()).path("code").asInt();if(code==40240)throw new UserFailure(402,40240,"该模型token余额不足，请联系管理员充值");if(code==40341)throw new UserFailure(403,40341,"此功能尚未开放，请联系管理员");throw new UserFailure(503,50203,"AI回答未完整生成");}
+                        if(event.equals("error")){int code=json.readTree(data.toString()).path("code").asInt();if(code==40240)throw new UserFailure(402,40240,"Token 余额不足，请联系管理员充值后重试。");if(code==40341)throw new UserFailure(403,40341,"此功能尚未开放，请联系管理员");throw new UserFailure(503,50203,"AI回答未完整生成");}
                         if(event.equals("done")){done=true;break;}
                         if(event.equals("delta")){
                             JsonNode parsed=json.readTree(data.toString());if(!parsed.path("text").isString())throw new UserFailure(503,50204,"AI服务流格式错误");
@@ -235,13 +244,14 @@ public class PublicAiClient {
             JsonNode envelope=json.readTree(raw);
             if(response.statusCode()!=200){
                 String upstream=String.valueOf(envelope.path("code").asInt(0));
-                if(upstream.equals("40240"))throw new UserFailure(402,40240,"该模型token余额不足，请联系管理员充值");
+                if(upstream.equals("40240"))throw new UserFailure(402,40240,"Token 余额不足，请联系管理员充值后重试。");
                 if(upstream.equals("40341"))throw new UserFailure(403,40341,"此功能尚未开放，请联系管理员");
+                if(action.startsWith("ai.private_")&&Set.of(41360,42260,50360,50460,50260,50401,50201,50202,50345).contains(envelope.path("code").asInt()))throw new UserFailure(response.statusCode(),envelope.path("code").asInt(),"私人题目处理未完成，未自动重试");
                 throw new UserFailure(503,50200,"AI服务返回错误（上游码 "+upstream+"）");
             }
             if(!envelope.path("code").isIntegralNumber() || envelope.path("code").asInt()!=0 || !envelope.path("data").isObject())throw new IllegalStateException();
             JsonNode data=envelope.get("data");
-            if(!Set.of("ai.material_generate","material.pdf_export").contains(action))audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
+            if(!action.startsWith("ai.private_")&&!Set.of("ai.material_generate","material.pdf_export").contains(action))audit.record(caller==null?null:caller.actor(),action,null,caller==null?null:caller.traceId(),payload,data,null,elapsed(started),1,null);
             return data;
         } catch(InterruptedException failure){Thread.currentThread().interrupt();throw new UserFailure(503,50322,"AI处理已中断，未自动重试");}
         // UserFailure 已带明确原因（例如上游业务码），不能被下面兜底覆盖成通用文案。

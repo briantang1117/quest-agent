@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { IconDelete, IconMore } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconMore, IconRefresh } from '@arco-design/web-vue/es/icon'
 import {
   ApiError,
   createCoachApi,
+  createPrivateQuestionsApi,
+  type PrivateAsset,
+  type PrivateImportJob,
   createMaterialsApi,
   isActiveMaterial,
   type Material,
@@ -16,10 +19,14 @@ import {
   type CoachSessionSummary,
   type CoachTurn,
 } from '@quest/shared'
+import PrivateImportCard from '../components/PrivateImportCard.vue'
 import SafeMarkdown from '../components/SafeMarkdown.vue'
 import CoachQuestionCard from '../components/CoachQuestionCard.vue'
 import MaterialCard from '../components/MaterialCard.vue'
 import CoachMemoryPanel from '../components/CoachMemoryPanel.vue'
+import { useCoachRecovery } from '../composables/coach-recovery'
+import { failedReplyRetry } from '../composables/coach-retry'
+import { groupCoachMaterials } from '../composables/coach-materials'
 import { useMaterialPolling } from '../composables/material-polling'
 const auth = useAuthStore(),
   api = createCoachApi(auth),
@@ -32,18 +39,99 @@ const session = ref<CoachSession | null>(null),
   busy = ref(false),
   loading = ref(false),
   error = ref(false)
+const privateApi = createPrivateQuestionsApi(auth)
+const attachments = ref<PrivateAsset[]>([]),
+  uploading = ref(false),
+  fileInput = ref<HTMLInputElement>()
+const privateImports = computed(() => {
+  const pending = new Map((session.value?.privateImports ?? []).map((job) => [job.id, job]))
+  const messages = new Map<string, PrivateImportJob[]>()
+  for (const message of session.value?.messages ?? []) {
+    if (message.role !== 'assistant' || !message.privateImportId) continue
+    const job = pending.get(message.privateImportId)
+    if (job) {
+      messages.set(message.id, [job])
+      pending.delete(job.id)
+    }
+  }
+  // 旧消息被长会话裁剪后，其任务仍保留在当前消息之前。
+  return { messages, earlier: [...pending.values()] }
+})
+const replyRetry = computed(() => failedReplyRetry(session.value))
+async function retryReply() {
+  const retry = replyRetry.value
+  if (!retry || loading.value) return
+  await send('chat', retry.text, retry.attachments)
+}
+function updatePrivateJob(job: PrivateImportJob) {
+  if (!session.value || session.value.id !== job.session_id) return
+  session.value.privateImports = (session.value.privateImports ?? []).map((item) =>
+    item.id === job.id ? job : item,
+  )
+}
+async function uploadFiles(files: File[]) {
+  if (uploading.value || busy.value || !session.value || session.value.processing) return
+  if (files.length + attachments.value.length > 4) {
+    notifyError(new Error('每条消息最多4个附件'))
+    return
+  }
+  if (
+    files.some(
+      (file) =>
+        file.size === 0 ||
+        file.size > 8 * 1024 * 1024 ||
+        !/\.(png|jpe?g|webp|pdf|txt)$/i.test(file.name),
+    )
+  ) {
+    notifyError(new Error('请选择不超过8MiB的PNG、JPEG、WebP、PDF或UTF-8文本'))
+    return
+  }
+  const version = revision
+  uploading.value = true
+  try {
+    for (const file of files) {
+      const asset = await privateApi.upload(file, crypto.randomUUID())
+      if (!alive || version !== revision) return
+      attachments.value.push(asset)
+    }
+  } catch (error) {
+    if (alive && version === revision) notifyError(error)
+  } finally {
+    if (alive && version === revision) uploading.value = false
+  }
+}
+function onFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  void uploadFiles(Array.from(input.files ?? []))
+  input.value = ''
+}
+function onPaste(event: ClipboardEvent) {
+  const images = Array.from(event.clipboardData?.files ?? [])
+  if (images.length) {
+    event.preventDefault()
+    void uploadFiles(images)
+    return
+  }
+  const text = event.clipboardData?.getData('text/plain') ?? ''
+  if (text.length > 2000) {
+    event.preventDefault()
+    void uploadFiles([new File([text], '题目文本.txt', { type: 'text/plain' })])
+  }
+}
 const materialApi = createMaterialsApi(auth)
 const materials = ref<Material[]>([]),
   materialBusy = ref(false)
-const orderedMaterials = computed(() =>
-  [...materials.value].sort(
-    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
-  ),
+const groupedMaterials = computed(() =>
+  groupCoachMaterials(session.value?.messages ?? [], materials.value),
 )
 function updateMaterial(value: Material) {
   const index = materials.value.findIndex((item) => item.id === value.id)
   if (index < 0) materials.value.push(value)
-  else materials.value[index] = value
+  else
+    materials.value[index] = {
+      ...value,
+      sourceMessageId: value.sourceMessageId ?? materials.value[index]?.sourceMessageId,
+    }
 }
 const { paused: materialPaused, resume: resumeMaterials } = useMaterialPolling(
   () => materials.value,
@@ -61,12 +149,25 @@ async function createMaterial() {
     return
   const version = revision,
     id = session.value.id
+  const sourceMessageId = session.value.messages.at(-1)?.id
   materialBusy.value = true
   try {
     const value = await materialApi.create(id, { requestId: crypto.randomUUID() })
     if (!alive || version !== revision) return
-    updateMaterial(value)
+    updateMaterial({
+      ...value,
+      sourceMessageId: value.sourceMessageId ?? sourceMessageId,
+    })
     resumeMaterials()
+    // 按钮创建也由服务端写入资料通知；读回该消息，刷新后保持相同位置。
+    try {
+      const updated = await api.get(id, true)
+      if (!alive || version !== revision) return
+      session.value = updated
+      selected.value = selectionFor(updated)
+    } catch (cause) {
+      if (alive && version === revision) notifyError(cause)
+    }
     void scroll(version)
   } catch (cause) {
     if (alive && version === revision) notifyError(cause)
@@ -74,6 +175,19 @@ async function createMaterial() {
     if (alive && version === revision) materialBusy.value = false
   }
 }
+const { paused: recoveryPaused, resume: resumeRecovery } = useCoachRecovery(
+  () => session.value,
+  () => busy.value,
+  (id, signal) => api.get(id, true, signal),
+  (value) => {
+    session.value = value
+    selected.value = selectionFor(value)
+    for (const item of value.materials ?? []) {
+      const existing = materials.value.find((material) => material.id === item.id)
+      if (!existing || item.updatedAt > existing.updatedAt) updateMaterial(item)
+    }
+  },
+)
 const messages = ref<HTMLElement>()
 const deleting = ref<string | null>(null)
 let listRevision = 0
@@ -86,6 +200,8 @@ let alive = true,
   revision = 0
 let active: { requestId: string; controller: AbortController } | null = null
 function cancelPending() {
+  attachments.value = []
+  uploading.value = false
   materials.value = []
   materialBusy.value = false
   resumeMaterials()
@@ -232,12 +348,18 @@ async function scroll(expectedRevision = revision, follow = true) {
   if (alive && expectedRevision === revision && follow)
     messages.value?.scrollTo?.({ top: messages.value.scrollHeight, behavior: 'auto' })
 }
-async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
+async function send(
+  action: 'chat' | 'next' | 'answer',
+  text = draft.value,
+  retryAttachments?: string[],
+) {
   if (
     busy.value ||
+    materialBusy.value ||
+    uploading.value ||
     !session.value ||
     session.value.processing ||
-    (action === 'chat' && !text.trim()) ||
+    (action === 'chat' && !text.trim() && !attachments.value.length) ||
     (action === 'answer' && !selected.value.length)
   )
     return
@@ -247,7 +369,10 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
   const payload: CoachTurn = {
     requestId: crypto.randomUUID(),
     action,
-    text: action === 'chat' ? text.trim() : '',
+    text: action === 'chat' ? text.trim() || '已发送附件' : '',
+    ...(action === 'chat' && (retryAttachments ?? attachments.value).length
+      ? { attachments: retryAttachments ?? attachments.value.map((item) => item.id) }
+      : {}),
   }
   if (session.value.persisted === false)
     payload.draft = { topicId: session.value.topic?.id ?? null }
@@ -267,7 +392,7 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
         ? '下一题'
         : `我的答案：${payload.keys!.join('、')}`
   optimistic.value = { id: `pending-${payload.requestId}`, role: 'user', text: sent }
-  if (action === 'chat') draft.value = ''
+  if (action === 'chat' && retryAttachments === undefined) draft.value = ''
   void scroll(currentRevision)
   let confirmed = false
   const accept = (value: CoachSession) => {
@@ -293,6 +418,10 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
     optimistic.value = null
     selected.value = selectionFor(value)
     confirmed = true
+    if (payload.attachments)
+      attachments.value = attachments.value.filter(
+        (item) => !payload.attachments!.includes(item.id),
+      )
     void scroll(currentRevision, follow)
   }
   try {
@@ -357,6 +486,10 @@ async function send(action: 'chat' | 'next' | 'answer', text = draft.value) {
           if (!existing || item.updatedAt > existing.updatedAt) updateMaterial(item)
         }
         selected.value = selectionFor(value)
+        if (confirmed && payload.attachments)
+          attachments.value = attachments.value.filter(
+            (item) => !payload.attachments!.includes(item.id),
+          )
       } catch (recoveryError) {
         if (
           isCurrent() &&
@@ -499,6 +632,25 @@ watch(
             <p>可以从学习空间开始刷题，也可以新建对话，聊聊一个困惑的知识点。</p>
             <a-button type="primary" :disabled="busy" @click="newChat()">开始对话</a-button>
           </div>
+          <article v-if="groupedMaterials.earlier.length" class="coach-message assistant">
+            <span class="message-speaker">知序 · 更早的学习资料</span>
+            <MaterialCard
+              v-for="material in groupedMaterials.earlier"
+              :key="material.id"
+              :material="material"
+              @update="updateMaterial"
+            />
+          </article>
+          <article v-if="privateImports.earlier.length" class="coach-message assistant">
+            <span class="message-speaker">知序</span>
+            <p class="earlier-imports-label">更早的题目导入</p>
+            <PrivateImportCard
+              v-for="job in privateImports.earlier"
+              :key="job.id"
+              :job="job"
+              @update="updatePrivateJob"
+            />
+          </article>
           <article
             v-for="message in session?.messages || []"
             :key="message.id"
@@ -506,7 +658,40 @@ watch(
             :class="message.role"
           >
             <span class="message-speaker">{{ message.role === 'assistant' ? '知序' : '我' }}</span>
+            <a-space v-if="message.attachments?.length" wrap
+              ><a-tag v-for="asset in message.attachments" :key="asset.id">{{
+                asset.filename
+              }}</a-tag></a-space
+            >
             <SafeMarkdown class="message-prose" :source="message.text" />
+            <div v-if="replyRetry?.messageId === message.id" class="message-failure-actions">
+              <a-tooltip content="重新生成回复；已保存的作答不会重复提交">
+                <a-button
+                  type="text"
+                  size="small"
+                  aria-label="重试回复"
+                  data-test="retry-reply"
+                  :loading="busy"
+                  :disabled="loading || busy || uploading || !!session?.processing"
+                  @click="retryReply"
+                  ><template #icon><IconRefresh /></template
+                ></a-button>
+              </a-tooltip>
+            </div>
+            <PrivateImportCard
+              v-for="job in privateImports.messages.get(message.id) ?? []"
+              :key="job.id"
+              :job="job"
+              @update="updatePrivateJob"
+            />
+            <div v-if="groupedMaterials.messages.has(message.id)" class="coach-message-materials">
+              <MaterialCard
+                v-for="material in groupedMaterials.messages.get(message.id)"
+                :key="material.id"
+                :material="material"
+                @update="updateMaterial"
+              />
+            </div>
             <details v-if="message.sources?.length" class="coach-sources">
               <summary>外部资料，未核验 · {{ message.sources.length }} 个来源</summary>
               <ul>
@@ -534,17 +719,9 @@ watch(
               @submit="send('answer')"
             />
           </article>
-          <div v-if="orderedMaterials.length" class="coach-materials" aria-label="对话学习资料">
-            <MaterialCard
-              v-for="material in orderedMaterials"
-              :key="material.id"
-              :material="material"
-              @update="updateMaterial"
-            />
-            <a-button v-if="materialPaused" size="small" @click="resumeMaterials"
-              >刷新资料状态</a-button
-            >
-          </div>
+          <a-button v-if="materialPaused" size="small" @click="resumeMaterials"
+            >刷新资料状态</a-button
+          >
           <!-- 服务端确认前先显示自己的消息，所有动作都立即反馈。 -->
           <article v-if="optimistic" class="coach-message user is-pending">
             <span class="message-speaker">我</span>
@@ -584,11 +761,26 @@ watch(
             }}
           </p>
           <p v-if="session?.processing && !busy" class="coach-thinking">
-            上一条消息仍在处理中。你可以稍后重新打开查看结果，或从左侧菜单删除对话并中断生成。
+            {{
+              recoveryPaused ? '会话状态更新已暂停。' : '上一条消息仍在处理中，正在自动查询进度…'
+            }}
+            <a-button v-if="recoveryPaused" type="text" size="small" @click="resumeRecovery"
+              >查询进度</a-button
+            >
           </p>
         </div>
       </div>
       <form v-if="session" class="coach-composer" @submit.prevent="send('chat')">
+        <a-space v-if="attachments.length" wrap
+          ><a-tag
+            v-for="asset in attachments"
+            :key="asset.id"
+            :closable="!busy"
+            @close="attachments = attachments.filter((item) => item.id !== asset.id)"
+            >{{ asset.filename }}</a-tag
+          ></a-space
+        >
+        <small v-if="attachments.length">导入时将使用已配置的图片识别与模型服务处理附件。</small>
         <label class="sr-only" for="coach-input">消息</label>
         <a-textarea
           id="coach-input"
@@ -598,13 +790,28 @@ watch(
           :auto-size="{ minRows: 2, maxRows: 5 }"
           :disabled="busy || session.processing"
           @keydown="onComposerKeydown"
+          @paste="onPaste"
         />
         <div>
+          <input
+            ref="fileInput"
+            type="file"
+            hidden
+            multiple
+            accept=".png,.jpg,.jpeg,.webp,.pdf,.txt"
+            @change="onFiles"
+          />
+          <a-button
+            :loading="uploading"
+            :disabled="busy || session.processing"
+            @click="fileInput?.click()"
+            >添加题目附件</a-button
+          >
           <a-button
             html-type="submit"
             type="primary"
             :loading="busy"
-            :disabled="!draft.trim() || session.processing"
+            :disabled="(!draft.trim() && !attachments.length) || uploading || session.processing"
             >发送</a-button
           >
         </div>
@@ -613,6 +820,11 @@ watch(
   </section>
 </template>
 <style scoped>
+.earlier-imports-label {
+  margin: 8px 0 0;
+  color: var(--color-text-3);
+  font-size: 12px;
+}
 .coach-sources {
   margin-top: 12px;
   color: var(--color-text-3);
@@ -788,10 +1000,10 @@ watch(
   min-height: 0;
   overflow-y: auto;
 }
-.coach-materials {
+.coach-message-materials {
   display: grid;
   gap: 12px;
-  margin-bottom: 24px;
+  margin-top: 12px;
 }
 .coach-message {
   margin-bottom: 24px;
@@ -804,6 +1016,15 @@ watch(
   background: var(--color-fill-1);
   padding: 12px 16px;
   border-radius: 2px;
+}
+.message-failure-actions {
+  margin-top: 8px;
+}
+.message-failure-actions :deep(.arco-btn) {
+  color: var(--color-text-3);
+}
+.message-failure-actions :deep(.arco-btn:hover) {
+  color: rgb(var(--primary-6));
 }
 .message-speaker {
   font-size: 12px;

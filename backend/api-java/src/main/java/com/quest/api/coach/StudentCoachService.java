@@ -26,7 +26,7 @@ public class StudentCoachService {
     public record Preference(String subject,Integer examYear) {}
     public record Create(UUID requestId,String mode,UUID topicId,Boolean preview) { public Create(UUID requestId,String mode){this(requestId,mode,null,false);} }
     public record DraftStart(UUID topicId) {}
-    public record Turn(UUID requestId,String action,String text,String questionId,List<String> keys,DraftStart draft) { public Turn(UUID requestId,String action,String text,String questionId,List<String> keys){this(requestId,action,text,questionId,keys,null);} }
+    public record Turn(UUID requestId,String action,String text,String questionId,List<String> keys,DraftStart draft,List<UUID> attachments) { public Turn(UUID requestId,String action,String text,String questionId,List<String> keys){this(requestId,action,text,questionId,keys,null,null);} public Turn(UUID requestId,String action,String text,String questionId,List<String> keys,DraftStart draft){this(requestId,action,text,questionId,keys,draft,null);} }
     record Session(UUID id,long userId,String subject,String title,ObjectNode state,UUID processing) {}
     record Pending(Session session,Turn request,JsonNode replay) {}
     private final ObjectProvider<JdbcTemplate> jdbc;
@@ -42,6 +42,7 @@ public class StudentCoachService {
     @org.springframework.beans.factory.annotation.Autowired private CoachMemoryService memory;
     @Value("${quest.coach.context.history-messages:32}") private int historyMessages=32;
     @Value("${quest.coach.context.history-chars:96000}") private int historyChars=96000;
+    @org.springframework.beans.factory.annotation.Autowired private CoachPrivateImports privateImports;
     private final com.quest.api.materials.LearningMaterialService materials;
     private record ActiveStream(UUID sessionId,long userId,UUID requestId,CoachStreamControl control) {}
     @org.springframework.context.event.EventListener public void sessionsRevoked(UserService.SessionsRevoked event){for(var stream:activeStreams)if(stream.userId()==event.userId())stream.control().close();}
@@ -128,6 +129,7 @@ public class StudentCoachService {
         Pending pending;
         try{
             pending=tx(who,()->{
+            privateImports.validate(Long.parseLong(who.user().id()),input.attachments());
             Session s=find(key,Long.parseLong(who.user().id()),true);
             if(s==null&&input.draft()!=null){
                 if(input.action().equals("answer"))throw new IllegalArgumentException();
@@ -168,6 +170,7 @@ public class StudentCoachService {
         UUID key=uuid(id);
         Pending pending=claim(who,id,input);
         if(pending.replay()!=null)return pending.replay();
+        if(uploadOnly(input))return acknowledgeAttachments(who,pending);
         try {
             Session s=pending.session();ObjectNode state=s.state();
             String text=input.text()==null?"":input.text().strip();
@@ -177,7 +180,7 @@ public class StudentCoachService {
                 JsonNode intent=ai.turn(context(s,text),who.user().id(),traceId);
                 action=intent.path("action").asText();
                 if(action.equals("material")&&!CoachCapabilities.requestsDocument(text))action="chat";
-                if(!Set.of("next","answer","chat","clarify","material").contains(action))throw unavailable();
+                if(!Set.of("next","answer","chat","clarify","material","private_import","private_decision").contains(action))throw unavailable();
                 if(action.equals("answer")){
                     keys=new ArrayList<>();for(JsonNode k:intent.path("keys"))keys.add(k.asText());
                     // 自然语言识别先展示待确认选择，不直接替用户提交。
@@ -185,9 +188,11 @@ public class StudentCoachService {
                     message(state,"assistant","你是要提交 "+String.join("、",keys)+" 吗？请在题目卡片确认选项后提交。");
                 } else if(action.equals("material")){
                     checkpoint(who,s,input);
-                    materials.create(who,id,new com.quest.api.materials.LearningMaterialService.Create(input.requestId(),text),state.withArray("messages").get(state.withArray("messages").size()-1).path("id").asText());
-                    message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true);
-                } else if(action.equals("next"))nextQuestion(s);
+                    var createdMaterial=materials.create(who,id,new com.quest.api.materials.LearningMaterialService.Create(input.requestId(),text),state.withArray("messages").get(state.withArray("messages").size()-1).path("id").asText());
+                    message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true).put("materialId",createdMaterial.get("id").toString());
+                } else if(action.equals("private_import"))createPrivate(who,s,input,text);
+                else if(action.equals("private_decision"))privateImports.resolve(who,s,uuid(intent.path("private_item_id").asText()),intent.path("private_decision").asText(),text);
+                else if(action.equals("next"))nextQuestion(s);
                 // 纯答疑场景也可能想接着练：模型给文案，能否"下一题"由 Java 状态决定。
                 else {suggestions(message(state,"assistant",safeReply(intent)),intent.path("suggestions"),false,hasRemaining(s),s.userId());memory.stage(state,intent.path("memory"));stageTitle(state,intent.path("title"));}
             }else if(action.equals("next"))nextQuestion(s);
@@ -211,7 +216,7 @@ public class StudentCoachService {
                 catch(RuntimeException failure){
                     // 只记录类型，不打题干/解析/模型输出；降级不影响已判分结果。
                     org.slf4j.LoggerFactory.getLogger(StudentCoachService.class).warn("Coach explanation degraded: type={}",failure.getClass().getName());
-                    feedback += "\n\nAI讲解暂时不可用，你的作答已保存，可以先查看原解析。";}
+                    feedback += "\n\n"+(failure instanceof UserFailure uf&&uf.code()==40240?failureReply(40240,true):"AI讲解暂时不可用，你的作答已保存，可以先查看原解析。");}
                 // 判分后可以继续下一题：是否真的还有未做题由 Java 判定，模型只提供文案。
                 suggestions(message(state,"assistant",feedback),modelSuggestions,true,hasRemaining(s),s.userId());
             }
@@ -240,6 +245,7 @@ public class StudentCoachService {
     public JsonNode streamTurn(SessionIdentity who,Pending pending,String traceId,
                                java.util.function.BiConsumer<String,JsonNode> emit,CoachStreamControl control){
         if(pending.replay()!=null)return pending.replay();
+        if(uploadOnly(pending.request()))return acknowledgeAttachments(who,pending);
         ActiveStream active=null;
         try{
             control.attachThread();
@@ -250,10 +256,16 @@ public class StudentCoachService {
             control.detachThread();
         }
     }
-    public record WorkflowStep(String grant,String step,List<String> keys,String reply,JsonNode suggestions) {}
+    private boolean uploadOnly(Turn input){return input.action().equals("chat")&&input.attachments()!=null&&!input.attachments().isEmpty()&&input.text().strip().equals("已发送附件");}
+    private JsonNode acknowledgeAttachments(SessionIdentity who,Pending pending){
+        try{return tx(who,()->{var s=pending.session();var input=pending.request();var live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();userMessage(s.state(),input,"已发送附件");message(s.state(),"assistant","附件已收到。要收入私有题库，可以说“帮我导入题目”或“记下这些错题”；现在还没有开始识题或校对。");return finish(who,s,input);});}
+        catch(RuntimeException failure){releaseClaim(pending.session(),pending.request());throw failure;}
+    }
+    private void createPrivate(SessionIdentity who,Session s,Turn input,String text){tx(who,()->{var live=require(s.id(),s.userId(),true);if(!input.requestId().equals(live.processing()))throw conflict();privateImports.create(who,s,input.requestId(),text);db().update("UPDATE student_coach_session SET state_json=? WHERE id=? AND user_id=?",json.writeValueAsString(s.state()),s.id(),s.userId());return null;});}
+    public record WorkflowStep(String grant,String step,List<String> keys,String reply,JsonNode suggestions,UUID privateItemId,String privateDecision) {public WorkflowStep(String grant,String step,List<String> keys,String reply,JsonNode suggestions){this(grant,step,keys,reply,suggestions,null,null);}}
     /** 回调每次重查登录、所有者、认领和原请求摘要；事务内只处理业务，不调用模型。 */
     public Map<String,Object> workflowStep(WorkflowStep input){
-        if(input==null||input.step()==null||!Set.of("context","submit_answer","next_question","suggest_answer","clarify","create_material").contains(input.step())||input.keys()!=null&&input.keys().size()>8||input.reply()!=null&&input.reply().length()>200||input.suggestions()!=null&&(!input.suggestions().isArray()||input.suggestions().size()>4))throw new IllegalArgumentException();
+        if(input==null||input.step()==null||!Set.of("context","submit_answer","next_question","suggest_answer","clarify","create_material","create_private_import","resolve_private").contains(input.step())||input.keys()!=null&&input.keys().size()>8||input.reply()!=null&&input.reply().length()>200||input.suggestions()!=null&&(!input.suggestions().isArray()||input.suggestions().size()>4))throw new IllegalArgumentException();
         var grant=workflowGrants.verify(input.grant());
         SessionIdentity who=users.session(grant.userId(),grant.loginSession());
         Session committed=tx(who,()->{
@@ -288,11 +300,17 @@ public class StudentCoachService {
                             if(!grant.action().equals("chat")||input.reply()==null||input.reply().isBlank())throw new IllegalArgumentException();
                             suggestions(message(state,"assistant",input.reply()),input.suggestions(),false,canAdvance(live),live.userId());
                         }
+                        case "create_private_import"->{
+                            if(!grant.action().equals("chat"))throw UserFailure.denied();privateImports.create(who,live,grant.requestId(),workflow.path("message").asText());
+                        }
+                        case "resolve_private"->{
+                            if(!grant.action().equals("chat"))throw UserFailure.denied();privateImports.resolve(who,live,input.privateItemId(),input.privateDecision(),workflow.path("message").asText());
+                        }
                         case "create_material"->{
                             if(!grant.action().equals("chat"))throw UserFailure.denied();
                             String text=workflow.path("message").asText();if(!CoachCapabilities.requestsDocument(text))throw new UserFailure(409,40932,"当前请求应在对话中回答，不能创建文档任务");var messages=state.withArray("messages");
-                            materials.create(who,live.id().toString(),new com.quest.api.materials.LearningMaterialService.Create(grant.requestId(),text),messages.get(messages.size()-1).path("id").asText());
-                            message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true);
+                            var createdMaterial=materials.create(who,live.id().toString(),new com.quest.api.materials.LearningMaterialService.Create(grant.requestId(),text),messages.get(messages.size()-1).path("id").asText());
+                            message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。").put("materialNotice",true).put("materialId",createdMaterial.get("id").toString());
                         }
                         default->throw new IllegalArgumentException();
                     }
@@ -352,7 +370,7 @@ public class StudentCoachService {
             String step=state.path("_workflow").path("step").asText();
             if(failed){
                 if(graded||step.isEmpty()){
-                    var assistant=message(state,"assistant",graded?"AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。":meta!=null&&meta.path("failureCode").asInt()==40240?"该模型token余额不足，请联系管理员充值后重试。":meta!=null&&meta.path("failureCode").asInt()==40341?"此功能尚未开放，请联系管理员。":"本次回答未完成，未自动重试。你可以重新发送问题。");
+                    var assistant=failureMessage(state,meta==null?0:meta.path("failureCode").asInt(),graded,input);
                     suggestions(assistant,null,graded,canAdvance(live),live.userId());
                 }
             }else{
@@ -390,18 +408,20 @@ public class StudentCoachService {
                 stage="route";
                 JsonNode intent=ai.route(context(s,text),who.user().id(),traceId);
                 control.check();action=intent.path("action").asText();if(action.equals("material")&&!CoachCapabilities.requestsDocument(text))action="chat";
-                if(!Set.of("next","answer","chat","clarify","material").contains(action))throw unavailable();
+                if(!Set.of("next","answer","chat","clarify","material","private_import","private_decision").contains(action))throw unavailable();
                 if(action.equals("answer")){
                     if(!state.hasNonNull("current")||state.hasNonNull("result"))throw conflict();
                     List<String> keys=new ArrayList<>();for(JsonNode k:intent.path("keys"))keys.add(k.asText());
                     validateSelection(state.path("current").path("snapshot"),keys);
                     state.set("suggestedKeys",json.valueToTree(keys));
                     assistant=message(state,"assistant","你是要提交 "+String.join("、",keys)+" 吗？请在题目卡片确认选项后提交。");
+                }else if(action.equals("private_import")){createPrivate(who,s,input,text);assistant=(ObjectNode)state.withArray("messages").get(state.withArray("messages").size()-1);
+                }else if(action.equals("private_decision")){privateImports.resolve(who,s,uuid(intent.path("private_item_id").asText()),intent.path("private_decision").asText(),text);assistant=(ObjectNode)state.withArray("messages").get(state.withArray("messages").size()-1);
                 }else if(action.equals("material")){
                     stage="material";
-                    materials.create(who,s.id().toString(),new com.quest.api.materials.LearningMaterialService.Create(input.requestId(),text),state.withArray("messages").get(state.withArray("messages").size()-1).path("id").asText());
+                    var createdMaterial=materials.create(who,s.id().toString(),new com.quest.api.materials.LearningMaterialService.Create(input.requestId(),text),state.withArray("messages").get(state.withArray("messages").size()-1).path("id").asText());
                     stage="material-created";
-                    assistant=message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。");assistant.put("materialNotice",true);
+                    assistant=message(state,"assistant","已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。");assistant.put("materialNotice",true).put("materialId",createdMaterial.get("id").toString());
                 }else if(action.equals("clarify")){
                     assistant=message(state,"assistant",safeReply(intent));
                     suggestions(assistant,intent.path("suggestions"),false,canAdvance(s),s.userId());
@@ -445,7 +465,7 @@ public class StudentCoachService {
                 }
                 if(graded){
                     if(assistant!=null)state.withArray("messages").remove(state.withArray("messages").size()-1);
-                    assistant=message(state,"assistant","AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。");
+                    assistant=failureMessage(state,failure instanceof UserFailure uf?uf.code():0,true,input);
                     suggestions(assistant,null,true,canAdvance(s),s.userId());
                     JsonNode response=finish(who,s,input);
                     try{emit.accept("reset",json.createObjectNode());}catch(RuntimeException ignored){/* 对端已关闭 */}
@@ -454,7 +474,7 @@ public class StudentCoachService {
                 // 对话失败保留用户消息与中断提示，刷新可见；非法提交不作为成功轮次。
                 if(saved){
                     if(assistant!=null)state.withArray("messages").remove(state.withArray("messages").size()-1);
-                    message(state,"assistant","本次回答未完成，未自动重试。你可以重新发送问题。");
+                    failureMessage(state,failure instanceof UserFailure uf?uf.code():0,false,input);
                     JsonNode response=finish(who,s,input);
                     try{emit.accept("reset",json.createObjectNode());}catch(RuntimeException ignored){/* 对端已关闭 */}
                     return response;
@@ -467,6 +487,18 @@ public class StudentCoachService {
                 throw cleanupFailure;
             }finally{if(interrupted)Thread.currentThread().interrupt();}
         }
+    }
+    private ObjectNode failureMessage(ObjectNode state,int code,boolean graded,Turn input){
+        var reply=message(state,"assistant",failureReply(code,graded));
+        // 重试讲解只能作为聊天发起，绝不再次提交已保存答案。
+        if(graded)reply.put("retryText","请基于已保存的作答和判分，重新讲解这道题，说明思路与易错点。");
+        else if(input.action().equals("chat")&&input.text()!=null&&!input.text().isBlank())reply.put("retryText",input.text());
+        return reply;
+    }
+    private String failureReply(int code,boolean graded){
+        if(code==40240)return "Token 余额不足，请联系管理员充值后重试。"+(graded?"你的作答已保存，可以先查看原解析。":"");
+        if(code==40341)return "此功能尚未开放，请联系管理员。"+(graded?"你的作答已保存，可以先查看原解析。":"");
+        return graded?"AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。":"本次回答未完成，未自动重试。你可以重新发送问题。";
     }
     private boolean canAdvance(Session s){return (!s.state().hasNonNull("current")||s.state().hasNonNull("result"))&&hasRemaining(s);}
     private void grade(ObjectNode state,Turn input){
@@ -540,6 +572,8 @@ public class StudentCoachService {
     private JsonNode view(Session s){
         ObjectNode response=json.createObjectNode();response.put("id",s.id().toString());response.put("subject",s.subject());response.put("title",displayTitle(s));response.put("persisted",true);response.set("examYear",s.state().has("examYear")?s.state().get("examYear"):json.nullNode());response.set("syllabusVersionId",s.state().has("syllabusVersionId")?s.state().get("syllabusVersionId"):json.nullNode());response.set("messages",s.state().path("messages").deepCopy());
 
+        privateImports.hydrate(s,response.path("messages"));
+        response.set("privateImports",privateImports.jobs(s));
         response.set("memory",s.state().path("memory").isMissingNode()?json.nullNode():s.state().path("memory").deepCopy());response.set("topic",json.valueToTree(memory.linked(s.userId(),s.state())));
         response.set("currentQuestion",s.state().hasNonNull("current")?visibleQuestion(s.state().get("current")):json.nullNode());response.set("result",s.state().path("result").isMissingNode()?json.nullNode():s.state().get("result").deepCopy());
         response.set("suggestedKeys",s.state().path("suggestedKeys").isMissingNode()?json.createArrayNode():s.state().get("suggestedKeys"));response.put("processing",s.processing()!=null);response.set("materials",json.valueToTree(materials.sessionMaterials(s.userId(),s.id())));return filterCapabilities(response,s.userId());
@@ -557,8 +591,10 @@ public class StudentCoachService {
     }
     private void commitTitle(ObjectNode state){var title=state.remove("_pendingTitle");if(title!=null){state.put("conversationTitle",title.asText());state.put("titleGenerated",true);}}
     private void userMessage(ObjectNode state,Turn input,String text){
-        if(state.path("_precommittedUser").asText().equals(input.requestId().toString())){state.remove("_precommittedUser");return;}
-        message(state,"user",text);
+        ObjectNode item;
+        if(state.path("_precommittedUser").asText().equals(input.requestId().toString())){state.remove("_precommittedUser");item=(ObjectNode)state.withArray("messages").get(state.withArray("messages").size()-1);}
+        else item=message(state,"user",text);
+        if(input.attachments()!=null&&!input.attachments().isEmpty())item.set("attachments",json.valueToTree(input.attachments().stream().map(UUID::toString).toList()));
     }
     private ObjectNode message(ObjectNode state,String role,String text){ArrayNode messages=state.withArray("messages");ObjectNode item=messages.addObject();item.put("id",UUID.randomUUID().toString());item.put("role",role);item.put("text",text);if(messages.size()>100)messages.remove(0);return item;}
     /**
@@ -604,6 +640,7 @@ public class StudentCoachService {
         List<Map<String,String>> history=new ArrayList<>();JsonNode messages=s.state().path("messages");int budget=Math.clamp(historyChars,6000,120000),count=Math.clamp(historyMessages,10,100);
         for(int i=messages.size()-1;i>=0&&history.size()<count&&budget>0;i--){var msg=messages.get(i);String value=msg.path("text").asText();value=value.substring(0,Math.min(value.length(),Math.min(6000,budget)));budget-=value.length();history.addFirst(Map.of("role",msg.path("role").asText(),"text",value));}payload.put("history",history);
         if(s.state().path("memory").path("summary").isString())payload.put("memory",Map.of("summary",s.state().path("memory").path("summary").asText()));
+        payload.putAll(privateImports.context(s));
         var topic=memory.context(s.userId(),s.state());if(topic!=null)payload.put("learning_topic",topic);
         if(s.state().hasNonNull("current")){
             JsonNode snapshot=s.state().path("current").path("snapshot");List<Map<String,String>> options=new ArrayList<>();for(JsonNode option:snapshot.path("options"))options.add(Map.of("key",option.path("key").asText(),"text_md",option.path("text_md").asText()));payload.put("question",Map.of("type",snapshot.path("type").asText(),"stem_md",snapshot.path("stem_md").asText(),"options",options));
@@ -624,7 +661,7 @@ public class StudentCoachService {
     }
     private void validateTurn(Turn input){if(input==null||input.requestId()==null||input.action()==null||!Set.of("next","answer","chat").contains(input.action())||input.text()!=null&&input.text().length()>2000||input.keys()!=null&&input.keys().size()>8||input.action().equals("chat")&&(input.text()==null||input.text().isBlank()))throw new IllegalArgumentException();}
     private String requestFingerprint(Turn input){
-        try{ObjectNode payload=(ObjectNode)json.valueToTree(input);if(input.draft()==null)payload.remove("draft");return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(payload)));}
+        try{ObjectNode payload=(ObjectNode)json.valueToTree(input);if(input.draft()==null)payload.remove("draft");if(input.attachments()==null||input.attachments().isEmpty())payload.remove("attachments");return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(payload)));}
         catch(java.security.NoSuchAlgorithmException failure){throw new IllegalStateException();}
     }
     private void checkSubject(String subject){if(!Set.of("vocational_aptitude","administrative_aptitude").contains(subject))throw new IllegalArgumentException();}

@@ -46,13 +46,13 @@ public class ModelMeterService {
                 if(profiles.size()!=1||!profiles.getFirst().get("status").equals("active"))throw UserFailure.invalid();
                 if(!sid.isBlank())users.session(actor,sid);
                 if(profiles.getFirst().get("account_type").equals("student")){
-                    if(grant.path("path").asText().contains("coach-"))controls.requireFeature(user,"coach");
+                    if(grant.path("path").asText().contains("coach-")||grant.path("path").asText().contains("private-"))controls.requireFeature(user,"coach");
                     if(grant.path("path").asText().contains("syllabus-"))controls.requireFeature(user,"syllabus");
                     String feature=grant.path("path").asText().contains("material-generate")?"materials":input.capability().matches("(?i)search|fetch")?"search":null;
                     if(feature!=null)controls.requireFeature(user,feature);
                     if(input.reservation()>0){
                         var balance=controls.pooledBalance(user);
-                        if(((Number)balance.get("credited")).longValue()-((Number)balance.get("consumed")).longValue()-((Number)balance.get("reserved")).longValue()<input.reservation())throw new UserFailure(402,40240,"Token余额不足，请联系管理员充值");
+                        if(((Number)balance.get("credited")).longValue()-((Number)balance.get("consumed")).longValue()-((Number)balance.get("reserved")).longValue()<input.reservation())throw new UserFailure(402,40240,"Token 余额不足，请联系管理员充值后重试。");
                         controls.db().update("UPDATE model_balance SET reserved=reserved+? WHERE user_id=? AND model=?",input.reservation(),user,AdminControlService.SHARED_BALANCE);
                     }
                 }else user=null; // 管理员不扣普通用户余额，仍在记录中保留归属。

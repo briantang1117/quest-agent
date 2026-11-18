@@ -62,6 +62,7 @@ def test_exact_usage_and_missing_usage_have_separate_settlements(monkeypatch):
     real_client = httpx.AsyncClient
 
     def callback(request):
+        assert request.headers.get("Content-Type") == "application/json"
         raw = request.content
         body = json.loads(raw)
         canonical = "\n".join(
@@ -135,6 +136,7 @@ def test_quota_denial_prevents_supplier_call(monkeypatch):
             with pytest.raises(ServiceError) as failure:
                 await provider.generate_json([{"role": "user", "content": "问题"}])
             assert failure.value.code == 40240
+            assert failure.value.message == "Token 余额不足，请联系管理员充值后重试。"
         finally:
             meter_context.reset(context)
             await provider.aclose()
@@ -182,3 +184,121 @@ def test_streaming_http_keeps_meter_context_and_settles_supplier_usage(monkeypat
     assert len(callbacks) == 2
     assert callbacks[1][1]["inputTokens"] == 19
     assert callbacks[1][1]["outputTokens"] == 11
+
+
+def test_ocr_reservation_uses_image_budget_instead_of_base64_text_and_preserves_body():
+    from app.clients.model_meter import estimate_reservation
+
+    body = {
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "识别题目"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," + "A" * 800000},
+                    },
+                ],
+            }
+        ],
+        "max_tokens": 4096,
+    }
+    before = json.dumps(body)
+    config = settings(ocr_image_reservation_tokens=32768)
+    reservation = estimate_reservation(config, body, "vision-model", "OCR")
+    assert 32768 + 4096 < reservation < 40000
+    assert json.dumps(body) == before
+    assert estimate_reservation(config, body, "vision-model", "text") > 1600000
+    assert estimate_reservation(config, body, None, "OCR") == 0
+    larger = settings(ocr_image_reservation_tokens=65536)
+    assert estimate_reservation(larger, body, "vision-model", "OCR") - reservation == 32768
+
+
+def test_ocr_budget_still_settles_actual_supplier_usage(monkeypatch):
+    calls = []
+    real_client = httpx.AsyncClient
+
+    def callback(request):
+        calls.append((request.url.path, json.loads(request.content)))
+        return httpx.Response(200, json={"code": 0, "data": {}})
+
+    monkeypatch.setattr(
+        "app.clients.model_meter.httpx.AsyncClient",
+        lambda **kw: real_client(**kw, transport=httpx.MockTransport(callback)),
+    )
+
+    async def run():
+        context = meter_context.set((grant(), "private-source"))
+        try:
+            async with meter_call(
+                settings(ai_metering_enabled=True),
+                {
+                    "max_tokens": 4096,
+                    "messages": [
+                        {
+                            "content": [
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": "data:image/png;base64," + "A" * 800000},
+                                }
+                            ]
+                        }
+                    ],
+                },
+                "vision-model",
+                "OCR",
+            ) as call:
+                call.sent = True
+                call.usage({"usage": {"prompt_tokens": 2360, "completion_tokens": 880}})
+        finally:
+            meter_context.reset(context)
+
+    asyncio.run(run())
+    assert calls[0][1]["reservation"] < 40000
+    assert calls[1][1]["inputTokens"] == 2360
+    assert calls[1][1]["outputTokens"] == 880
+
+
+@pytest.mark.parametrize("step", ["reserve", "settle"])
+def test_meter_failure_logs_only_status_and_numeric_code(step, caplog):
+    from app.clients.model_meter import MeterCall
+
+    async def run():
+        call = MeterCall(settings(), "PRIVATE_GRANT", "private-model", "OCR", 1)
+        async with httpx.AsyncClient(
+            base_url="http://localhost:8080",
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    500, json={"code": 50000, "message": "PRIVATE_RESPONSE"}
+                )
+            ),
+        ) as client:
+            call.client = client
+            with pytest.raises(ServiceError) as failure:
+                await call.callback(step, {"model": "PRIVATE_MODEL"})
+            assert failure.value.code == 50345
+
+    asyncio.run(run())
+    assert f"step={step} status=500 code=50000" in caplog.text
+    assert "PRIVATE_" not in caplog.text
+
+
+@pytest.mark.parametrize("payload", [[], None, "PRIVATE_RESPONSE"])
+def test_meter_invalid_envelope_is_controlled_and_does_not_leak_content(payload, caplog):
+    from app.clients.model_meter import MeterCall
+
+    async def run():
+        call = MeterCall(settings(), "PRIVATE_GRANT", "model", "OCR", 1)
+        async with httpx.AsyncClient(
+            base_url="http://localhost:8080",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload)),
+        ) as client:
+            call.client = client
+            with pytest.raises(ServiceError) as failure:
+                await call.callback("reserve", {})
+            assert failure.value.code == 50345
+
+    asyncio.run(run())
+    assert "reason=invalid_response" in caplog.text
+    assert "PRIVATE_" not in caplog.text

@@ -133,6 +133,7 @@ const material = {
   id: 'material-1',
   sessionId,
   sourceTitle: '互动刷题',
+  sourceMessageId: 'm1',
   sourceDeleted: false,
   subject: 'vocational_aptitude' as const,
   title: '学习资料',
@@ -1370,4 +1371,500 @@ it('空白欢迎页保持草稿，首条消息携带创建信息，完成后更�
   expect(router.currentRoute.value.query.draft).toBeUndefined()
   expect(wrapper.get('h1').text()).toBe('城市平台概念辨析')
   expect(wrapper.get('.coach-sessions nav').text()).toContain('城市平台概念辨析')
+})
+it('题目附件上传本身不发送聊天，发送后携带附件ID且保留文件名', async () => {
+  const stream = mockStream()
+  const asset = {
+    id: 'asset-1',
+    filename: '题目.txt',
+    kind: 'text',
+    mime: 'text/plain',
+    sha256: 'a'.repeat(64),
+  }
+  const { wrapper, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.url === '/api/v1/coach/attachments') return asset
+      return c.url === '/api/v1/coach/sessions' ? { list: [] } : chatSession()
+    },
+  )
+  const input = wrapper.get('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    configurable: true,
+    value: [new File(['一加一 A.2 B.3'], '题目.txt', { type: 'text/plain' })],
+  })
+  await input.trigger('change')
+  await flushPromises()
+  expect(request).toHaveBeenCalledWith(
+    expect.objectContaining({ method: 'POST', url: '/api/v1/coach/attachments' }),
+  )
+  expect(stream.fetcher).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('题目.txt')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(JSON.parse(stream.fetcher.mock.calls[0]![1]!.body as string)).toMatchObject({
+    action: 'chat',
+    text: '已发送附件',
+    attachments: ['asset-1'],
+  })
+  stream.event('done', {
+    ...chatSession(),
+    messages: [
+      ...chatSession().messages,
+      { id: 'u', role: 'user', text: '已发送附件', attachments: [asset] },
+    ],
+  })
+  stream.close()
+  await flushPromises()
+  expect(wrapper.find('.coach-composer .arco-tag').exists()).toBe(false)
+  expect(wrapper.text()).toContain('题目.txt')
+})
+it('私人导入卡片独立轮询，切换会话停止旧任务回写', async () => {
+  vi.useFakeTimers()
+  const job = {
+    id: 'private-1',
+    session_id: sessionId,
+    subject: 'vocational_aptitude',
+    kind: 'question',
+    status: 'queued',
+    stage: 'queued',
+    items: [],
+    warnings: [],
+    saved: 0,
+    needs_attention: 0,
+    duplicates: 0,
+    failed: 0,
+    source_failures: 0,
+    error_code: null,
+  }
+  const { wrapper, router, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.url === '/api/v1/study/private-imports/private-1')
+        return { ...job, status: 'completed', saved: 1 }
+      if (c.url === '/api/v1/coach/sessions') return { list: [] }
+      return c.url?.endsWith(sessionId)
+        ? { ...chatSession(), privateImports: [job] }
+        : { ...chatSession(), id: 'other' }
+    },
+  )
+  expect(wrapper.text()).toContain('私有题目导入')
+  await vi.advanceTimersByTimeAsync(2100)
+  await flushPromises()
+  expect(wrapper.text()).toContain('已保存 1 题')
+  await router.push('/practice/agent?session=other')
+  await flushPromises()
+  const count = request.mock.calls.length
+  await vi.advanceTimersByTimeAsync(6000)
+  expect(request).toHaveBeenCalledTimes(count)
+  expect(wrapper.text()).not.toContain('私有题目导入')
+})
+it('真实布局首次发送移除draft和topic后保留同一Agent实例与SSE', async () => {
+  const stream = mockStream()
+  const empty = {
+    ...chatSession(),
+    persisted: false,
+    messages: [{ id: 'welcome', role: 'assistant' as const, text: '欢迎提问' }],
+  }
+  const { wrapper, router, request } = await render(
+    RouterView,
+    `/practice/agent?session=${sessionId}&draft=1&topic=topic-1`,
+    (c) => {
+      if (c.url === '/api/v1/coach/sessions') return c.method === 'POST' ? empty : { list: [] }
+      throw new Error('不应因消费草稿参数重新加载会话')
+    },
+  )
+  await vi.waitFor(() => expect(wrapper.findComponent(AgentView).exists()).toBe(true))
+  await flushPromises()
+  const instance = wrapper.findComponent(AgentView).element
+  await wrapper.get('textarea').setValue('导入全部题目')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  const state = {
+    ...empty,
+    persisted: true,
+    processing: true,
+    messages: [...empty.messages, { id: 'user', role: 'user' as const, text: '导入全部题目' }],
+  }
+  stream.event('state', state)
+  await flushPromises()
+  await flushPromises()
+  expect(router.currentRoute.value.query.draft).toBeUndefined()
+  expect(router.currentRoute.value.query.topic).toBeUndefined()
+  expect(wrapper.findComponent(AgentView).element).toBe(instance)
+  expect(
+    request.mock.calls.filter(([c]) => c.url?.endsWith(sessionId) && c.method === 'GET'),
+  ).toHaveLength(0)
+  stream.event('done', {
+    ...state,
+    processing: false,
+    messages: [...state.messages, { id: 'done', role: 'assistant', text: '已创建导入任务' }],
+  })
+  stream.close()
+  await flushPromises()
+  expect(wrapper.text()).toContain('已创建导入任务')
+  expect(wrapper.text()).not.toContain('上一条消息仍在处理中')
+})
+it('刷新遇到处理中会话只读查询到完成，不重发轮次', async () => {
+  vi.useFakeTimers()
+  let reads = 0
+  const { wrapper, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.url === '/api/v1/coach/sessions') return { list: [] }
+      return ++reads === 1
+        ? { ...chatSession(), processing: true }
+        : {
+            ...chatSession(),
+            messages: [{ id: 'done', role: 'assistant', text: '导入任务已创建' }],
+          }
+    },
+  )
+  expect(wrapper.text()).toContain('正在自动查询进度')
+  await vi.advanceTimersByTimeAsync(2100)
+  await flushPromises()
+  expect(wrapper.text()).toContain('导入任务已创建')
+  expect(wrapper.text()).not.toContain('上一条消息仍在处理中')
+  expect(request.mock.calls.filter(([c]) => c.method === 'POST')).toHaveLength(0)
+  const count = request.mock.calls.length
+  await vi.advanceTimersByTimeAsync(6000)
+  expect(request).toHaveBeenCalledTimes(count)
+})
+it('来源识别失败显示文件名及额度原因，已有失败任务不自动重试', async () => {
+  const job = {
+    id: 'private-1',
+    session_id: sessionId,
+    subject: 'vocational_aptitude',
+    kind: 'question',
+    status: 'needs_attention',
+    stage: 'finished',
+    items: [],
+    warnings: [],
+    saved: 0,
+    needs_attention: 0,
+    duplicates: 0,
+    failed: 0,
+    source_failures: 1,
+    error_code: null,
+    source_errors: [
+      {
+        id: 'source-1',
+        filename: '逻辑判断.pdf',
+        code: 40240,
+        message: 'Token 余额不足，请联系管理员充值后重试。',
+      },
+    ],
+  }
+  const { wrapper, request } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) =>
+      c.url === '/api/v1/coach/sessions'
+        ? { list: [] }
+        : { ...chatSession(), privateImports: [job] },
+  )
+  expect(wrapper.text()).toContain('导入失败')
+  expect(wrapper.text()).toContain('逻辑判断.pdf：Token 余额不足，请联系管理员充值后重试。')
+  expect(request.mock.calls.filter(([c]) => c.method === 'POST')).toHaveLength(0)
+})
+it('会话恢复查询的迟到响应不能覆盖新会话', async () => {
+  vi.useFakeTimers()
+  let resolve!: (value: CoachSession) => void
+  const pending = new Promise<CoachSession>((done) => {
+    resolve = done
+  })
+  let reads = 0
+  const { wrapper, router } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    (c) => {
+      if (c.url === '/api/v1/coach/sessions') return { list: [] }
+      if (c.url?.endsWith(sessionId))
+        return ++reads === 1 ? { ...chatSession(), processing: true } : pending
+      return {
+        ...chatSession(),
+        id: 'new-session',
+        messages: [{ id: 'new', role: 'assistant', text: '新会话内容' }],
+      }
+    },
+  )
+  await vi.advanceTimersByTimeAsync(2100)
+  await router.push('/practice/agent?session=new-session')
+  await flushPromises()
+  resolve({
+    ...chatSession(),
+    messages: [{ id: 'old', role: 'assistant', text: '旧会话迟到结果' }],
+  })
+  await flushPromises()
+  expect(wrapper.text()).toContain('新会话内容')
+  expect(wrapper.text()).not.toContain('旧会话迟到结果')
+})
+
+it('逐题校对额度不足也明确提示联系管理员充值', async () => {
+  const job = {
+    id: 'private-1',
+    session_id: sessionId,
+    subject: 'vocational_aptitude',
+    kind: 'question',
+    status: 'needs_attention',
+    stage: 'finished',
+    items: [
+      {
+        id: 'failed-item',
+        ordinal: 1,
+        status: 'failed',
+        result: null,
+        question_id: null,
+        asset_id: null,
+        error_code: 40240,
+        error_message: 'Token 余额不足，请联系管理员充值后重试。',
+      },
+    ],
+    warnings: [],
+    saved: 0,
+    needs_attention: 0,
+    duplicates: 0,
+    failed: 1,
+    source_failures: 0,
+    error_code: null,
+  }
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) =>
+    c.url === '/api/v1/coach/sessions' ? { list: [] } : { ...chatSession(), privateImports: [job] },
+  )
+  expect(wrapper.text()).toContain('本批第 1 题：Token 余额不足，请联系管理员充值后重试。')
+})
+it('导入卡片固定在创建任务的AI回复中，后续发送和出题排在它后面', async () => {
+  vi.useFakeTimers()
+  const stream = mockStream()
+  const job = {
+    id: 'private-1',
+    session_id: sessionId,
+    subject: 'vocational_aptitude' as const,
+    kind: 'question' as const,
+    status: 'queued' as const,
+    stage: 'queued',
+    items: [],
+    warnings: [],
+    saved: 0,
+    needs_attention: 0,
+    duplicates: 0,
+    failed: 0,
+    source_failures: 0,
+    error_code: null,
+  }
+  const initial: CoachSession = {
+    ...chatSession(),
+    messages: [
+      {
+        id: 'import-notice',
+        role: 'assistant',
+        text: '已开始导入到你的私有题库。',
+        privateImportId: job.id,
+      },
+    ],
+    privateImports: [job],
+  }
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, (c) => {
+    if (c.url === '/api/v1/coach/sessions') return { list: [] }
+    if (c.url === '/api/v1/study/private-imports/private-1')
+      return { ...job, status: 'completed', saved: 1 }
+    return initial
+  })
+  const card = wrapper.get('.private-import-card').element
+  expect(card.closest('.coach-message')).toBe(wrapper.findAll('.coach-message')[0]!.element)
+  await wrapper.get('textarea').setValue('开始刷题')
+  await wrapper.get('form').trigger('submit')
+  await flushPromises()
+  expect(wrapper.findAll('.coach-message').at(-1)!.text()).toContain('开始刷题')
+  expect(wrapper.findAll('.coach-message')[0]!.find('.private-import-card').exists()).toBe(true)
+  const user = { id: 'next-request', role: 'user' as const, text: '开始刷题' }
+  stream.event('state', { ...initial, processing: true, messages: [...initial.messages, user] })
+  stream.event('done', {
+    ...initial,
+    messages: [
+      ...initial.messages,
+      user,
+      { id: 'next-question', role: 'assistant', text: '来一道题。', question },
+    ],
+  })
+  stream.close()
+  await flushPromises()
+  expect(wrapper.findAll('.coach-message').map((item) => item.text())).toEqual([
+    expect.stringContaining('私有题目导入'),
+    expect.stringContaining('开始刷题'),
+    expect.stringContaining('来一道题。'),
+  ])
+  await vi.advanceTimersByTimeAsync(2100)
+  await flushPromises()
+  expect(wrapper.get('.private-import-card').element).toBe(card)
+  expect(wrapper.findAll('.coach-message')[0]!.text()).toContain('已保存 1 题')
+  expect(wrapper.findAll('.coach-message').at(-1)!.text()).toContain('来一道题。')
+})
+
+it('失败讲解提供图标重试，只发送聊天，不重复提交答案，并防止重复点击', async () => {
+  const stream = mockStream()
+  const failed = {
+    ...session(),
+    result: { correct: false, selectedKeys: ['A'], answerKeys: ['B'], explanationMd: '原解析' },
+    messages: [
+      ...session().messages,
+      { id: 'answer', role: 'user' as const, text: '我的答案：A' },
+      {
+        id: 'failed',
+        role: 'assistant' as const,
+        text: 'AI讲解未完成，你的作答已保存，可以先查看原解析；不会自动重新生成。',
+      },
+    ],
+  }
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, ({ url }) =>
+    url?.endsWith('/sessions') ? { list: [] } : failed,
+  )
+  const button = wrapper.get('[data-test="retry-reply"]')
+  expect(button.attributes('aria-label')).toBe('重试回复')
+  await button.trigger('click')
+  await flushPromises()
+  const payload = JSON.parse(stream.fetcher.mock.calls[0]![1]!.body as string)
+  expect(payload.action).toBe('chat')
+  expect(payload.text).toContain('已保存的作答和判分')
+  expect(payload.keys).toBeUndefined()
+  expect(payload.questionId).toBeUndefined()
+  await button.trigger('click')
+  await flushPromises()
+  expect(stream.fetcher).toHaveBeenCalledTimes(1)
+  stream.event('done', {
+    ...failed,
+    messages: [...failed.messages, { id: 'ok', role: 'assistant', text: '讲解完成' }],
+  })
+  stream.close()
+  await flushPromises()
+  expect(wrapper.find('[data-test="retry-reply"]').exists()).toBe(false)
+})
+
+it('普通失败重试使用原问题，保留输入框草稿', async () => {
+  const stream = mockStream()
+  const failed = {
+    ...chatSession(),
+    messages: [
+      { id: 'user', role: 'user' as const, text: '解释充分条件' },
+      {
+        id: 'failed',
+        role: 'assistant' as const,
+        text: '本次回答未完成，未自动重试。你可以重新发送问题。',
+        retryText: '解释充分条件',
+      },
+    ],
+  }
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, ({ url }) =>
+    url?.endsWith('/sessions') ? { list: [] } : failed,
+  )
+  await wrapper.get('textarea').setValue('尚未发送的草稿')
+  await wrapper.get('[data-test="retry-reply"]').trigger('click')
+  await flushPromises()
+  const payload = JSON.parse(stream.fetcher.mock.calls[0]![1]!.body as string)
+  expect(payload.text).toBe('解释充分条件')
+  expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('尚未发送的草稿')
+  stream.event('done', {
+    ...failed,
+    messages: [...failed.messages, { id: 'ok', role: 'assistant', text: '已解释' }],
+  })
+  stream.close()
+  await flushPromises()
+})
+
+it('已有后续消息时不允许重试历史失败回复', async () => {
+  const value = {
+    ...chatSession(),
+    messages: [
+      { id: 'user', role: 'user' as const, text: '旧问题' },
+      {
+        id: 'failed',
+        role: 'assistant' as const,
+        text: '本次回答未完成，未自动重试。你可以重新发送问题。',
+      },
+      { id: 'next', role: 'user' as const, text: '新问题' },
+    ],
+  }
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, ({ url }) =>
+    url?.endsWith('/sessions') ? { list: [] } : value,
+  )
+  expect(wrapper.find('[data-test="retry-reply"]').exists()).toBe(false)
+})
+
+it('Markdown卡片绑定创建回复，后续聊天和轮询完成不把它挪到末尾', async () => {
+  vi.useFakeTimers()
+  const value = {
+    ...chatSession(),
+    messages: [
+      { id: 'm1', role: 'assistant' as const, text: '原讲解' },
+      { id: 'request', role: 'user' as const, text: '生成md' },
+      {
+        id: 'notice',
+        role: 'assistant' as const,
+        text: '已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。',
+        materialId: material.id,
+      },
+      { id: 'followup', role: 'user' as const, text: '帮我总结一下组合型选择题常用的排除技巧' },
+      { id: 'reply', role: 'assistant' as const, text: '排除技巧讲解' },
+    ],
+    materials: [material],
+  }
+  const { wrapper } = await render(AgentView, `/practice/agent?session=${sessionId}`, ({ url }) =>
+    url?.startsWith('/api/v1/study/materials/')
+      ? { ...material, status: 'ready', title: '水资源制度解析' }
+      : url?.endsWith('/sessions')
+        ? { list: [] }
+        : value,
+  )
+  let messages = wrapper.findAll('.coach-message')
+  expect(messages[2]!.text()).toContain('排队中')
+  expect(messages[3]!.text()).toContain('组合型选择题')
+  await vi.advanceTimersByTimeAsync(3000)
+  await flushPromises()
+  messages = wrapper.findAll('.coach-message')
+  expect(messages[2]!.text()).toContain('水资源制度解析')
+  expect(messages[2]!.text()).toContain('已完成')
+  expect(messages[3]!.text()).toContain('组合型选择题')
+  expect(messages[4]!.text()).toBe('知序排除技巧讲解')
+})
+
+it('按钮创建后读回持久化AI通知，资料卡出现在该通知中', async () => {
+  let created = false
+  const initial = chatSession()
+  const updated = {
+    ...initial,
+    messages: [
+      ...initial.messages,
+      {
+        id: 'material-notice',
+        role: 'assistant' as const,
+        text: '已创建学习资料整理任务，完成后可在文件卡片或学习资料中下载。',
+        materialId: material.id,
+        materialNotice: true,
+      },
+    ],
+    materials: [material],
+  }
+  const { wrapper } = await render(
+    AgentView,
+    `/practice/agent?session=${sessionId}`,
+    ({ method, url }) => {
+      if (method === 'POST' && url?.endsWith('/materials')) {
+        created = true
+        return material
+      }
+      if (url?.endsWith('/sessions')) return { list: [] }
+      if (url?.startsWith('/api/v1/study/materials/')) return material
+      return created ? updated : initial
+    },
+  )
+  await wrapper.get('[data-test="create-material"]').trigger('click')
+  await flushPromises()
+  const messages = wrapper.findAll('.coach-message')
+  expect(messages).toHaveLength(2)
+  expect(messages[1]!.text()).toContain('已创建学习资料整理任务')
+  expect(messages[1]!.text()).toContain('排队中')
+  expect(messages[0]!.text()).not.toContain('排队中')
 })

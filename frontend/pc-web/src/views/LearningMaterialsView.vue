@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { createMaterialsApi, notifyError, useAuthStore, type Material } from '@quest/shared'
+import PrivateQuestionPool from '../components/PrivateQuestionPool.vue'
 import MaterialCard from '../components/MaterialCard.vue'
 import { useMaterialPolling } from '../composables/material-polling'
 const api = createMaterialsApi(useAuthStore())
+const tab = ref('documents')
 const materials = ref<Material[]>([]),
   loading = ref(false),
   failed = ref(false)
@@ -42,25 +44,31 @@ onMounted(load)
         <h1>学习资料</h1>
         <p>从对话中整理，留给下一次复习。</p>
       </div>
-      <a-button :loading="loading" @click="load">刷新</a-button>
+      <a-button v-if="tab === 'documents'" :loading="loading" @click="load">刷新</a-button>
     </header>
-    <a-alert v-if="paused" type="warning" class="materials-notice"
-      >状态更新已暂停，请刷新后继续查看。</a-alert
-    >
-    <a-spin :loading="loading" style="width: 100%">
-      <a-empty v-if="failed" description="学习资料加载失败，请刷新重试" />
-      <a-empty v-else-if="!loading && !materials.length" description="还没有学习资料"
-        ><RouterLink class="text-link" to="/practice/agent">去对话中整理</RouterLink></a-empty
+    <a-tabs v-model:active-key="tab"
+      ><a-tab-pane key="documents" title="整理文档" /><a-tab-pane key="private" title="私有题库"
+    /></a-tabs>
+    <PrivateQuestionPool v-if="tab === 'private'" />
+    <div v-show="tab === 'documents'">
+      <a-alert v-if="paused" type="warning" class="materials-notice"
+        >状态更新已暂停，请刷新后继续查看。</a-alert
       >
-      <div class="materials-list">
-        <MaterialCard
-          v-for="material in materials"
-          :key="material.id"
-          :material="material"
-          @update="update"
-        />
-      </div>
-    </a-spin>
+      <a-spin :loading="loading" style="width: 100%">
+        <a-empty v-if="failed" description="学习资料加载失败，请刷新重试" />
+        <a-empty v-else-if="!loading && !materials.length" description="还没有学习资料"
+          ><RouterLink class="text-link" to="/practice/agent">去对话中整理</RouterLink></a-empty
+        >
+        <div class="materials-list">
+          <MaterialCard
+            v-for="material in materials"
+            :key="material.id"
+            :material="material"
+            @update="update"
+          />
+        </div>
+      </a-spin>
+    </div>
   </section>
 </template>
 <style scoped>

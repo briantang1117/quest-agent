@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.agent import coach_search
 from app.agent.coach_capabilities import (
+    PRIVATE_IMPORT_PROMPT,
     SUGGESTION_CAPABILITY_PROMPT,
     filter_suggestions,
     normalize_intent,
@@ -146,10 +147,28 @@ class LearningTopic(Contract):
     revision: int = Field(ge=0)
 
 
+class AttachmentMeta(Contract):
+    id: str = Field(max_length=36)
+    filename: str = Field(max_length=200)
+    kind: Literal["text", "image", "pdf"]
+    mime: str = Field(max_length=80)
+    sha256: str = Field(max_length=64)
+
+
+class PrivateIssue(Contract):
+    id: str = Field(max_length=36)
+    ordinal: int = Field(ge=1, le=100)
+    issues: list[str] = Field(max_length=24)
+    original_keys: list[str] = Field(max_length=8)
+    suggested_keys: list[str] = Field(max_length=8)
+
+
 class CoachRequest(Contract):
     scope: Literal["admin", "student"]
     subject: Literal["vocational_aptitude", "administrative_aptitude"] = "vocational_aptitude"
     message: str = Field(min_length=1, max_length=2000)
+    attachments: list[AttachmentMeta] = Field(default_factory=list, max_length=4)
+    private_items: list[PrivateIssue] = Field(default_factory=list, max_length=10)
     title_pending: bool = False
     capabilities: dict[str, bool] = Field(default_factory=dict)
     history: list[HistoryMessage] = Field(default_factory=list, max_length=100)
@@ -201,6 +220,8 @@ class RouteReply(CoachReply):
                 "next": "继续下一题。",
                 "answer": "请在题卡确认选项后提交。",
                 "material": "请求生成学习文档。",
+                "private_import": "请求导入私人题目。",
+                "private_decision": "处理题目疑点。",
             }
             if value.get("action") in confirmations and len(value["reply"]) > 200:
                 return {**value, "reply": confirmations[value["action"]]}
@@ -294,10 +315,13 @@ async def route_intent(payload: CoachRequest, request: Request):
         "仅做短 JSON 意图识别，不生成完整讲解。"
         "开始练习/下一题为next；明确提交选项为answer；知识提问/闲聊为chat；含糊作答为clarify。"
         "不能把假设、引用、排除选项或‘为什么不选A’当作提交，需澄清。"
-        "输出JSON {action:next|answer|chat|clarify|material,keys:[],"
+        "输出JSON {action:next|answer|chat|clarify|material|private_import|private_decision,"
+        "keys:[],"
         "reply:简短确认或澄清文案,suggestions:[]}。"
         "keys仅answer时非空且不重复；reply只给一句确认，最多80字，绝不回答问题、不输出表格或正文；"
-        "完整讲解由后续独立节点生成，suggestions留空。" + MATERIAL_INTENT_PROMPT,
+        "完整讲解由后续独立节点生成，suggestions留空。"
+        + PRIVATE_IMPORT_PROMPT
+        + MATERIAL_INTENT_PROMPT,
     )
     try:
         content = await provider.generate_json(messages)

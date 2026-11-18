@@ -57,6 +57,8 @@ class MeterCall:
             canonical.encode(),
             hashlib.sha256,
         ).hexdigest()
+        response = None
+        safe_step = step if step in {"reserve", "settle"} else "unknown"
         try:
             response = await self.client.post(
                 path,
@@ -72,14 +74,29 @@ class MeterCall:
             if len(response.content) > 32768:
                 raise ValueError()
             payload = response.json()
-            if response.status_code != 200 or payload.get("code") != 0:
-                code = payload.get("code")
+            if not isinstance(payload, dict):
+                raise ValueError("invalid envelope")
+            code = payload.get("code")
+            if response.status_code != 200 or type(code) is not int or code != 0:
+                logger.warning(
+                    "Meter callback failed: step=%s status=%d code=%s",
+                    safe_step,
+                    response.status_code,
+                    code if type(code) is int and 0 <= code <= 99999 else None,
+                )
                 if code == 40240:
-                    raise ServiceError(402, 40240, "Token余额不足，请联系管理员充值")
+                    raise ServiceError(402, 40240, "Token 余额不足，请联系管理员充值后重试。")
                 if code == 40341:
                     raise ServiceError(403, 40341, "此功能尚未开放，请联系管理员")
                 raise ServiceError(503, 50345, "模型额度服务暂不可用")
         except (httpx.HTTPError, ValueError, TypeError) as exc:
+            logger.warning(
+                "Meter callback failed: step=%s status=%s reason=%s type=%s",
+                safe_step,
+                response.status_code if response is not None else None,
+                "transport_error" if isinstance(exc, httpx.HTTPError) else "invalid_response",
+                type(exc).__name__,
+            )
             raise ServiceError(503, 50345, "模型额度服务暂不可用") from exc
 
     def usage(self, payload):
@@ -92,6 +109,38 @@ class MeterCall:
             self.tokens = (prompt, completion)
 
 
+def estimate_reservation(settings, body, model, capability="text"):
+    if model is None:
+        return 0
+    images = 0
+
+    def estimate_data(value):
+        nonlocal images
+        if isinstance(value, dict):
+            image = value.get("image_url")
+            if (
+                capability == "OCR"
+                and value.get("type") == "image_url"
+                and isinstance(image, dict)
+                and str(image.get("url", "")).startswith("data:image/")
+                and ";base64," in image["url"]
+            ):
+                images += 1
+                return {**value, "image_url": {**image, "url": "inline-image"}}
+            return {key: estimate_data(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [estimate_data(item) for item in value]
+        return value
+
+    text_bytes = len(json.dumps(estimate_data(body), ensure_ascii=False).encode())
+    return (
+        text_bytes * 2
+        + body.get("max_tokens", 0)
+        + 1024
+        + images * settings.ocr_image_reservation_tokens
+    )
+
+
 @asynccontextmanager
 async def meter_call(settings, body, model, capability="text"):
     context = meter_context.get()
@@ -100,12 +149,7 @@ async def meter_call(settings, body, model, capability="text"):
         return
     grant, root_capability = context
     # 只用于保守预占，不作为实际扣费；按供应商usage结算。
-    maximum = body.get("max_tokens", 0)
-    budget = (
-        0
-        if model is None
-        else len(json.dumps(body, ensure_ascii=False).encode()) * 2 + maximum + 1024
-    )
+    budget = estimate_reservation(settings, body, model, capability)
     meter = MeterCall(
         settings,
         grant,

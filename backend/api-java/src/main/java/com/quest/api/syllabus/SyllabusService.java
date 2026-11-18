@@ -87,7 +87,12 @@ public class SyllabusService {
     public JsonNode context(String id,String subject,int year,String keyword){
         var d=find(uuid(id),false);if(d.path("status").asText().equals("draft")||!d.path("examType").asText().equals(exam(subject))||d.path("examYear").asInt()!=year)return json.createArrayNode();
         JsonNode vectorHits=null;
-        if(keyword!=null&&!keyword.isBlank())try{vectorHits=pipeline.retrieve(uuid(id),subject,keyword,true);}catch(UserFailure failure){org.slf4j.LoggerFactory.getLogger(SyllabusService.class).warn("Syllabus retrieval fallback: version={} code={}",id,failure.code());}
+        if(keyword!=null&&!keyword.isBlank())try{vectorHits=pipeline.retrieve(uuid(id),subject,keyword,true);}catch(RuntimeException failure){
+            // RAG 是可选增强。向量供应商、索引或查询异常均跳过检索，不能阻断聊天/已判分讲解。
+            // 仅记录安全元数据；空片段让模型基于题目、权威判分和历史继续，不伪造引用。
+            org.slf4j.LoggerFactory.getLogger(SyllabusService.class).warn("Syllabus RAG skipped: version={} code={} type={}",id,failure instanceof UserFailure uf?uf.code():0,failure.getClass().getSimpleName());
+            return json.createArrayNode();
+        }
         if(vectorHits!=null)return vectorHits;
         JsonNode matched=citations(d,subject,keyword,true);
         // 对话不是精确搜索框：考纲概览问题缺少章节关键词时，提供同一绑定版本的受限片段。

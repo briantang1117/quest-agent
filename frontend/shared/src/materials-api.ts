@@ -5,6 +5,7 @@ export interface Material {
   id: string
   sessionId: string
   sourceTitle: string
+  sourceMessageId?: string
   sourceDeleted: boolean
   subject: StudySubject
   title: string
@@ -26,6 +27,10 @@ export function isMaterial(value: unknown): value is Material {
     ['id', 'sessionId', 'sourceTitle', 'title', 'createdAt', 'updatedAt'].every(
       (key) => typeof item[key] === 'string',
     ) &&
+    (item.sourceMessageId === undefined ||
+      (typeof item.sourceMessageId === 'string' &&
+        item.sourceMessageId.length > 0 &&
+        item.sourceMessageId.length <= 64)) &&
     typeof item.sourceDeleted === 'boolean' &&
     (item.subject === 'vocational_aptitude' || item.subject === 'administrative_aptitude') &&
     (item.status === 'queued' ||

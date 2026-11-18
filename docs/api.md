@@ -155,3 +155,20 @@
 ## 流式与身份
 
 Java公开Coach SSE事件为state/delta/tool_status/reset/done及error；Python内部还有sources/suggestions/tool_audit，Java校验后保存或审计，不能原样透传网页全文。业务会话/资料所有者从Java已鉴权身份取得，不接受自由用户ID绕过。Java仅三个精确资料POST及陪练`workflow-step`使用对应HMAC过滤器，其余internal默认拒绝。Python新图另发内部`workflow_state`与`workflow_result`，Java读取权威状态并消费终态，不将这两个事件原样传给浏览器。
+
+## PrivateQuestionController（学生本人）
+
+- `POST /api/v1/coach/attachments`：认证multipart附件上传；不会触发OCR/导入。
+- `GET /api/v1/coach/attachments/{id}/file`：本人原件下载。
+- `GET /api/v1/study/private-imports/{id}`：本人任务实际进度与逐题结果。
+- `POST /api/v1/study/private-imports/{id}/actions`：`retry/cancel`。
+- `POST /api/v1/study/private-items/{id}/decision`：携带`sessionId`与`use_suggestion/keep_original/exclude`。
+- `GET /api/v1/study/private-questions`：本人科目/状态/关键词/分页查询。
+
+Coach轮次新增可选`attachments`原件ID列表；会话返回附件元数据和`privateImports`卡片；助手消息通过可选`privateImportId`关联任务，前端将进度卡固定内嵌在该AI回复内。创建任务与聊天决策走受控业务动作。Python签名内部接口`POST /internal/private-source`、`POST /internal/private-check`仅处理计算，不写业务表。需要V16；详见[私人导入](私人题目池与Agent导入.md)。
+
+
+陪练失败回复可包含可选的 `retryText`（非空字符串，最多 2000 字），用于前端末尾失败回复的手动重试入口。客户端用新 `requestId`、`action=chat` 发送该文本；已保存作答的失败只重试讲解，不重放 `answer`。重试属于新的模型调用，正常计量；不会因页面刷新或错误自动触发。旧会话无该字段时，客户端仅兼容已有的固定失败文案。
+
+
+学习资料卡片随 AI 消息内联显示。创建通知可携带 `materialId` / `materialNotice`；资料返回可选 `sourceMessageId`，从创建时不可变快照中恢复历史位置。顶部按钮创建会在同一事务内写入一条关联资料的 assistant 通知，不调用聊天模型；前端创建后读回会话。消息已裁剪的历史资料在“更早的学习资料”中展示，不追加到最新消息下方。无需数据库升级。
